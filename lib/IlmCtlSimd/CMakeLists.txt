@@ -36,6 +36,7 @@
 
 set(SOURCES
 	CtlSimdAddr.cpp
+	CtlSimdArena.cpp
 	CtlSimdFunctionCall.cpp
 	CtlSimdHalfExpLog.cpp
 	CtlSimdInst.cpp
@@ -85,6 +86,25 @@ target_link_libraries(IlmCtlSimd
           $<$<TARGET_EXISTS:IlmBase::IlmThread>:IlmBase::IlmThread>
           $<$<TARGET_EXISTS:IlmBase::Iex>:IlmBase::Iex>
 )
+
+if(CTL_USE_ACCELERATE)
+	target_compile_definitions(IlmCtlSimd PRIVATE CTL_USE_ACCELERATE=1)
+	target_link_libraries(IlmCtlSimd PRIVATE "-framework Accelerate")
+endif()
+
+if(CTL_USE_SLEEF)
+	target_compile_definitions(IlmCtlSimd PRIVATE
+		CTL_USE_SLEEF=1
+		CTL_SLEEF_ULP=${CTL_SLEEF_ULP})
+	target_link_libraries(IlmCtlSimd PRIVATE ${CTL_SLEEF_TARGET})
+	# Set only when sleef came from FetchContent, whose in-tree targets do not
+	# export the directory holding the generated sleef.h.
+	if(CTL_SLEEF_INCLUDE_DIR)
+		target_include_directories(IlmCtlSimd PRIVATE ${CTL_SLEEF_INCLUDE_DIR})
+	endif()
+endif()
+
+target_link_libraries(IlmCtlSimd PUBLIC Threads::Threads)
 
 set_target_properties(IlmCtlSimd
 	PROPERTIES

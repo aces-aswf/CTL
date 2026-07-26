@@ -55,6 +55,7 @@
 
 #include <testGaussRec.h>
 #include <testAffineRec.h>
+#include <testMathVectorParity.h>
 #include <iostream>
 #include <string.h>
 
@@ -69,6 +70,7 @@ main (int argc, char *argv[])
     TEST (testGaussRecLarge);
     TEST (testAffineRecSmall);
     TEST (testAffineRecLarge);
+    TEST (testMathVectorParity);
 
     return 0;
 }

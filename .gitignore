@@ -1,5 +1,6 @@
 debug
 build
+build-*
 unittest/ctlrender/output
 unittest/exrdpx/output
 .DS_Store
@@ -7,3 +8,4 @@ unittest/exrdpx/output
 Testing
 .vs
 CMakeSettings.json
+benchmarks/inputs/

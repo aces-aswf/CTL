@@ -59,3 +59,34 @@ jobs:
     # - name: Test
     #   working-directory: ${{github.workspace}}/build
     #   run: ctest -V --output-on-failure -C ${{env.BUILD_TYPE}}
+
+  build-sleef:
+    # Phase A+ coverage: Windows x86_64 sleef build via vcpkg.  First
+    # Windows coverage for CTL's vectorized transcendental path; sleef
+    # baselines on x86_64 are SSE2.
+    runs-on: windows-latest
+
+    steps:
+
+    - name: install dependencies - imath
+      run:  vcpkg install imath:x64-windows
+
+    - name: install dependencies - openexr
+      run:  vcpkg install openexr:x64-windows
+
+    - name: install dependencies - tiff
+      run:  vcpkg install tiff:x64-windows
+
+    - name: install dependencies - sleef
+      run:  vcpkg install sleef:x64-windows
+
+    - name: check vcpkg install status
+      run: vcpkg list
+
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -D "CMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DCTL_USE_SLEEF=ON
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}

@@ -53,10 +53,19 @@
 ///////////////////////////////////////////////////////////////////////////
 
 
+#include <testEdgeValues.h>
 #include <testEndOfLine.h>
+#include <testInlineHelpers.h>
+#include <testHelperRecognition.h>
 #include <testParser.h>
+#include <testConcurrentCalls.h>
 #include <testCppCall.h>
+#include <testExc.h>
+#include <testSimdRegAddr.h>
+#include <testSimdRegOwnership.h>
+#include <testUniformBoolDefault.h>
 #include <testVarying.h>
+#include <testVaryingArrayIndex.h>
 #include <testHugeInit.h>
 #include <testVaryingReturn.h>
 #include <testVaryingLookup.h>
@@ -74,6 +83,15 @@ main (int argc, char *argv[])
 
     TEST (testEndOfLine);
     TEST (testParser);
+    TEST (testExc);
+    TEST (testSimdRegAddr);
+    TEST (testSimdRegOwnership);
+    TEST (testEdgeValues);
+    TEST (testInlineHelpers);
+    TEST (testHelperRecognition);
+    TEST (testConcurrentCalls);
+    TEST (testUniformBoolDefault);
+    TEST (testVaryingArrayIndex);
     TEST (testExamples);
     TEST (testCppCall);
     TEST (testVarying);

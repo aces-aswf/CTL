@@ -83,6 +83,15 @@ class SimdInterpreter: public Interpreter
     unsigned long		abortCount();
     unsigned long		maxInstCount();
 
+    //
+    // When false, the math stdlib bypasses the Accelerate/SLEEF
+    // batched transcendental specializations and runs the per-element
+    // scalar libm `Func::call` path. Lock-free read on the math
+    // dispatch hot path; set this before workers start.
+    //
+    void			setUseBatchedMath (bool enabled);
+    bool			useBatchedMath () const;
+
   private:
 
     virtual FunctionCallPtr	newFunctionCallInternal 

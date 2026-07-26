@@ -171,6 +171,24 @@ class SymbolInfo: public RcObject
     void			setValue (const ExprNodePtr &value);
 
 
+    //-----------------------------------------------------------------
+    // Code generator hint.  A back end may recognize that the function
+    // this symbol refers to computes a specific well-known operation,
+    // and record that here so that call sites can emit a direct
+    // implementation instead of a call.  The value is private to the
+    // back end that sets it; the front end only stores it.
+    //
+    // The default, -1, means "nothing recognized" and is what every
+    // symbol keeps unless a back end deliberately marks it.  Because
+    // the mark is attached to the symbol rather than to a name, a
+    // function that merely shares a name with a well-known operation
+    // is never mistaken for it.
+    //-----------------------------------------------------------------
+
+    int				codeGenHint () const	{return _codeGenHint;}
+    void			setCodeGenHint (int hint) {_codeGenHint = hint;}
+
+
     //--------------------------------------------
     // Print the SymbolInfo object (for debugging)
     //--------------------------------------------
@@ -186,6 +204,7 @@ class SymbolInfo: public RcObject
     bool                _isTypeName;
 
     ReadWriteAccess     _access;
+    int			_codeGenHint;
 };
 
 typedef RcPtr<SymbolInfo> SymbolInfoPtr;

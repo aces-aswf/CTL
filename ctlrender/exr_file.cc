@@ -55,6 +55,23 @@
 #include "exr_file.hh"
 #include <fstream>
 
+//
+// C99's restrict has no standard C++ spelling.  GCC and Clang expose it as
+// __restrict__, MSVC as __restrict; anything else gets a no-op, since the
+// qualifier is strictly an optimization hint.
+//
+
+#ifndef CTL_RESTRICT
+    #if defined(_MSC_VER)
+        #define CTL_RESTRICT __restrict
+    #elif defined(__GNUC__) || defined(__clang__)
+        #define CTL_RESTRICT __restrict__
+    #else
+        #define CTL_RESTRICT
+    #endif
+#endif
+
+
 #if defined(HAVE_OPENEXR)
 #include <ImfInputFile.h>
 #include <ImfOutputFile.h>
@@ -63,6 +80,10 @@
 #include <ImfHeader.h>
 #include <ImfChannelList.h>
 #include <Iex.h>
+#include <algorithm>
+#include <atomic>
+#include <thread>
+#include <vector>
 
 void exr_read_standard_attributes(Imf::InputFile *file, format_t *format)
 {
@@ -168,11 +189,10 @@ bool exr_read(const char *name, float scale, ctl::dpx::fb<float> *pixels,
 		return 1;
 	}
 
-	float *p=pixels->ptr();
-	for(uint64_t i=0; i<pixels->count(); i++) {
-		*p=*p*scale;
-		p++;
-	}
+	float * CTL_RESTRICT p = pixels->ptr();
+	const uint64_t n = pixels->count();
+	for (uint64_t i = 0; i < n; i++)
+		p[i] *= scale;
 	return 1;
 }
 
@@ -246,11 +266,47 @@ void exr_write(const char *name, float scale, const ctl::dpx::fb<float> &pixels,
         half_pixels.init(pixels.width(), pixels.height(), pixels.depth());
         half_pixels.alpha(1.0);
 
-        // convert from float buffer to half buffer
+        // Parallelize float->half using a fetch_add work-queue (same
+        // pattern as transform.cc's tile loop).  OpenEXR rejects a FLOAT
+        // slice when the channel is HALF so we still do the conversion
+        // ourselves; scalar-serial dominated wall-clock on large exr16
+        // writes (~33M samples at 4K).  Work-stealing instead of equal
+        // static chunks avoids the E-core tail on heterogeneous Apple
+        // Silicon (12 P-cores + 4 E-cores on M4 Max): each thread grabs
+        // a small chunk, so fast cores naturally process more chunks
+        // than slow cores.  Byte-identical to a serial loop.
         const float* fIn = pixelPtr;
         half* out = half_pixels.ptr();
-        for (uint64_t i = 0; i < pixels.count(); i++) {
-           *(out++) = half(*(fIn++));
+        const uint64_t n = pixels.count();
+        unsigned nthreads = std::thread::hardware_concurrency();
+        if (nthreads == 0) nthreads = 1;
+        // Below this size, thread-spawn overhead dominates the work.
+        const uint64_t kMinToThread = 128 * 1024;  // 512 KiB of floats
+        if (n < kMinToThread) nthreads = 1;
+
+        if (nthreads <= 1) {
+            for (uint64_t i = 0; i < n; i++) out[i] = half(fIn[i]);
+        } else {
+            // Chunk sized so each core processes several chunks and any
+            // laggard only owns one small tail chunk.
+            const uint64_t kChunk = 64 * 1024;  // 256 KiB of floats
+            std::atomic<uint64_t> next{0};
+            auto worker = [fIn, out, n, &next, kChunk]() {
+                while (true) {
+                    uint64_t begin = next.fetch_add(kChunk,
+                        std::memory_order_relaxed);
+                    if (begin >= n) return;
+                    uint64_t end = begin + kChunk;
+                    if (end > n) end = n;
+                    for (uint64_t i = begin; i < end; i++)
+                        out[i] = half(fIn[i]);
+                }
+            };
+            std::vector<std::thread> pool;
+            pool.reserve(nthreads - 1);
+            for (unsigned t = 1; t < nthreads; t++) pool.emplace_back(worker);
+            worker();  // main thread participates
+            for (auto &th : pool) th.join();
         }
 
         half const* halfPixelPtr = half_pixels.ptr();
@@ -265,7 +321,7 @@ void exr_write(const char *name, float scale, const ctl::dpx::fb<float> &pixels,
         if (depth == 4) {
           frameBuffer.insert("A", Imf::Slice::Make(pixelType, (char*)(halfPixelPtr + 3), dataWindow, xstride, ystride));
         }
-            
+
     }
     else {
         // No conversion needed so insert the float buffer into the frambuffer
@@ -278,7 +334,7 @@ void exr_write(const char *name, float scale, const ctl::dpx::fb<float> &pixels,
         if (depth == 4) {
           frameBuffer.insert("A", Imf::Slice::Make(pixelType, (char*)(pixelPtr + 3), dataWindow, xstride, ystride));
         }
-            
+
     }
 
     file.setFrameBuffer(frameBuffer);

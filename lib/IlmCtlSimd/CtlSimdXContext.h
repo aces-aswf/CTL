@@ -69,6 +69,7 @@
 #include <CtlSimdModule.h>
 #include <typeinfo>
 #include <CtlSimdReg.h>
+#include <CtlSimdArena.h>
 #include <string>
 
 namespace Ctl {
@@ -93,6 +94,12 @@ class SimdStack
 
     void	push (SimdReg *reg, RegOwnership ownership);
     void	pop (int n, bool giveUpOwnership = false);
+
+    // Destroy the top n owned regs (same as pop(n)) and write reg in
+    // place of the new TOS, all with a single _sp adjustment.  Equivalent
+    // to pop(n); push(reg, ownership) but avoids the extra _sp bump and
+    // bounds check on the SimdUnaryOpInst / SimdBinaryOpInst hot path.
+    void	replaceTop (int n, SimdReg *reg, RegOwnership ownership);
 
     int		sp () const		{return _sp;}
     int		fp () const		{return _fp;}
@@ -134,6 +141,7 @@ class SimdXContext
 
     SimdStack &		stack ()			{return _stack;}
     int			regSize () const		{return _regSize;}
+    SimdArena &		arena ()			{return _arena;}
 
     int			lineNumber () const		{return _lineNumber;}
     void		setLineNumber (int ln)   	{_lineNumber = ln;}
@@ -144,7 +152,16 @@ class SimdXContext
     SimdModule*		module()			{return _module;}
     void		setModule(SimdModule* m)	{_module = m;}
 
-    void		countInstruction ();
+    // Hot-path: bumps _instCount.  Every 8192 increments, falls through to
+    // countInstructionSlow to check for max-instruction-count / abort-count.
+    // Inlined so the dispatch loop avoids a cross-TU function call on every
+    // instruction.
+    void		countInstruction ()
+			{
+			    if ((++_instCount & 0x01fff) == 0)
+				countInstructionSlow();
+			}
+    void		countInstructionSlow ();
 
     SimdInterpreter &interpreter(void) const { return _interpreter; };
 
@@ -153,6 +170,7 @@ class SimdXContext
     SimdInterpreter &	_interpreter;
 
     SimdStack		_stack;
+    SimdArena		_arena;
     int			_regSize;
     SimdBoolMask *	_returnMask;
 
@@ -180,13 +198,13 @@ class StackFrame
 	_stack(xcontext.stack()),
 	_savedSp (_stack.sp()),
 	_savedFp (_stack.fp()),
-	_savedRMask (new SimdBoolMask(false))
+	_freshMask (false),
+	_savedRMask (0)
     {
 	_stack.setFp (_stack.sp());
-	
-	(*_savedRMask)[0] = 0;
-	_savedRMask = _xcontext.swapReturnMasks(_savedRMask);
 
+	_freshMask[0] = 0;
+	_savedRMask = _xcontext.swapReturnMasks(&_freshMask);
     }
 
     ~StackFrame ()
@@ -194,8 +212,7 @@ class StackFrame
 	_stack.pop (_stack.sp() - _savedSp);
 	_stack.setFp (_savedFp);
 
-	_savedRMask = _xcontext.swapReturnMasks(_savedRMask);
-	delete _savedRMask;
+	_xcontext.swapReturnMasks(_savedRMask);
     }
 
   private:
@@ -204,7 +221,8 @@ class StackFrame
     SimdStack    & _stack;
     int		   _savedSp;
     int		   _savedFp;
-    SimdBoolMask * _savedRMask;
+    SimdBoolMask   _freshMask;   // embedded; no heap alloc on ctor/dtor
+    SimdBoolMask * _savedRMask;  // borrowed: caller's returnMask
 };
 
 

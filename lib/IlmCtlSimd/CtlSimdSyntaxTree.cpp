@@ -69,6 +69,63 @@
 #include <cassert>
 #include <vector>
 #include <CtlSimdOp.h>
+#include <CtlSimdStdLibTemplates.h>
+#include <cmath>
+
+
+namespace Ctl {
+
+// SimdCFunc-shaped implementations of seven operations that CTL
+// programs commonly write out by hand: min, max, clip,
+// radians_to_degrees, degrees_to_radians, copysign and wrap_to_360.
+// Calling one of these through the interpreter costs far more than the
+// one or two arithmetic operations it performs, so a definition that
+// computes one of them is compiled into a direct call to the matching
+// implementation below.
+//
+// Which definitions qualify is decided by reading the function's body,
+// not its name -- see recognizeHelperBody further down.  CTL reserves
+// none of these names, so a program may define, say, its own clip()
+// that does something else; that definition is left alone.  Each body
+// below therefore has to stay bit-identical to the CTL body it stands
+// in for, and unittest/IlmCtl/testInlineHelpers pins that.
+//
+// Restricted to pure arithmetic so helpers that internally call
+// pow/log/exp/sqrt keep their SLEEF / Accelerate batched-math path
+// through the existing simdFunc{1,2}Arg templates.
+
+DEFINE_SIMD_FUNC_2_ARG (InlineMinFloat,
+                        (a1 < a2 ? a1 : a2),
+                        float, float, float);
+DEFINE_SIMD_FUNC_2_ARG (InlineMaxFloat,
+                        (a1 > a2 ? a1 : a2),
+                        float, float, float);
+DEFINE_SIMD_FUNC_1_ARG (InlineClipFloat,
+                        (a1 < 1.0f ? a1 : 1.0f),
+                        float, float);
+DEFINE_SIMD_FUNC_1_ARG (InlineRadToDegFloat,
+                        (a1 * 180.0f / 3.14159265358979323846f),
+                        float, float);
+DEFINE_SIMD_FUNC_1_ARG (InlineDegToRadFloat,
+                        (a1 / 180.0f * 3.14159265358979323846f),
+                        float, float);
+
+// Match CTL `sign(y)*fabs(x)` exactly; sign(0) is 0, so copysign(x,0)=0.
+// (std::copysign would return +x for y=0 -- different semantics.)
+DEFINE_SIMD_FUNC_2_ARG (InlineCopysignFloat,
+                        ((a2 < 0.0f ? -1.0f : (a2 > 0.0f ? 1.0f : 0.0f))
+                         * std::fabs (a1)),
+                        float, float, float);
+
+// CTL: float y = fmod(hue, 360.); if (y < 0.) y += 360.; return y;
+DEFINE_SIMD_FUNC_1_ARG (InlineWrapTo360Float,
+                        ([](float h) {
+                            float y = std::fmod (h, 360.0f);
+                            return y < 0.0f ? y + 360.0f : y;
+                        })(a1),
+                        float, float);
+
+} // namespace Ctl
 
 using namespace std;
 
@@ -244,6 +301,16 @@ SimdFunctionNode::generateESizeCode(SimdLContext &slcontext,
 }
 
 
+//
+// Decide whether a function definition computes one of the operations
+// that has a direct implementation here.  Defined further down, next to
+// the implementations themselves and the body patterns it matches.
+//
+
+static int
+recognizeHelperBody (const FunctionTypePtr &ft, const StatementNodePtr &body);
+
+
 void
 SimdFunctionNode::generateCode (LContext &lcontext)
 {
@@ -264,7 +331,20 @@ SimdFunctionNode::generateCode (LContext &lcontext)
     }
     SimdLContext::Path path = slcontext.currentPath();
 
-    SimdInst *firstBodyInst = 
+    //
+    // Record whether this definition computes one of the operations we
+    // have a direct implementation for.  Done here, once, rather than
+    // at each call site: the body is in hand, and call sites can then
+    // read the answer off the symbol.
+    //
+    // Must happen before the body is compiled below, so that a helper
+    // defined earlier in the file is already marked when a later one
+    // that calls it is checked (clip needs min, copysign needs sign).
+    //
+
+    info->setCodeGenHint (recognizeHelperBody (functionType, body));
+
+    SimdInst *firstBodyInst =
 	generateCodeForPath (body, slcontext, &path, &_locals);
 
     info->setAddr (new SimdInstAddr (firstBodyInst));
@@ -1092,6 +1172,560 @@ SimdCallNode::returnsType(const TypePtr &t) const
 
 
 
+//-----------------------------------------------------------------------------
+//
+//	Recognizing the helpers listed above in a CTL function definition.
+//
+//	A name is not enough.  CTL reserves none of these names, so a
+//	program is free to define its own clip() that does something else
+//	entirely, and substituting our body for that one would silently
+//	change the result.  What follows therefore matches the function's
+//	*body*: a definition is recognized only when it computes exactly
+//	the operation the C++ body computes.  Anything else -- a different
+//	comparison, a swapped return, an extra statement -- is left alone
+//	and compiles into an ordinary CTL function call.
+//
+//	The check runs once per function definition, in
+//	SimdFunctionNode::generateCode, and the result is recorded on the
+//	function's symbol.  Call sites read the recorded value, so a call
+//	costs no more to compile than it did before.
+//
+//	Helpers that call other CTL functions (clip calls min, copysign
+//	calls sign) are recognized only when the function they call was
+//	itself recognized, so redefining min also stops clip from being
+//	substituted.
+//
+//-----------------------------------------------------------------------------
+
+namespace {
+
+//
+// Kinds recorded on a symbol.  Values are stable: the switch in
+// SimdCallNode::generateCode and the test suite both depend on them.
+// SIGN is verified but never substituted; it exists only so that
+// copysign can require a genuine sign().
+//
+
+enum InlineKind
+{
+    INLINE_NONE		= -1,
+    INLINE_MIN		= 0,
+    INLINE_MAX		= 1,
+    INLINE_CLIP		= 2,
+    INLINE_RAD_TO_DEG	= 6,
+    INLINE_DEG_TO_RAD	= 7,
+    INLINE_COPYSIGN	= 9,
+    INLINE_WRAP_TO_360	= 10,
+    INLINE_SIGN		= 100
+};
+
+
+//
+// Every body recognized below has a fixed, known length, so the
+// patterns index into the statement list and check its length rather
+// than walking it.
+//
+
+int
+statementCount (const StatementNodePtr &s)
+{
+    int n = 0;
+    for (StatementNode *p = s.pointer(); p; p = p->next.pointer())
+	n++;
+    return n;
+}
+
+
+StatementNode *
+statementAt (const StatementNodePtr &s, int index)
+{
+    StatementNode *p = s.pointer();
+    for (int i = 0; p && i < index; i++)
+	p = p->next.pointer();
+    return p;
+}
+
+
+//
+// Is e a reference to a local or parameter (that is, to something at a
+// frame-relative address) rather than to a global?  A global constant
+// such as M_PI lives at an absolute address, so this distinguishes the
+// two without needing the frame offset itself.
+//
+
+bool
+isFrameRelative (const SymbolInfoPtr &info)
+{
+    if (!info)
+	return false;
+
+    SimdDataAddrPtr addr = info->addr().cast<SimdDataAddr>();
+
+    return addr && addr->reg() == 0;
+}
+
+
+//
+// Is e a reference to parameter number index of ft?
+//
+// Compared against the function's own parameter name, so a definition
+// that spells its parameters differently is still recognized.  The
+// frame-relative test rules out a same-named global.
+//
+
+bool
+isParamRef (const ExprNodePtr &e, const FunctionTypePtr &ft, size_t index)
+{
+    NameNodePtr n = e.cast<NameNode>();
+
+    if (!n || !ft || index >= ft->parameters().size())
+	return false;
+
+    return n->name == ft->parameters()[index].name && isFrameRelative (n->info);
+}
+
+
+bool
+isLocalRef (const ExprNodePtr &e, const VariableNode *v)
+{
+    NameNodePtr n = e.cast<NameNode>();
+
+    return n && v && n->info && n->info.pointer() == v->info.pointer();
+}
+
+
+//
+// CTL promotes an integer literal to float where a float is wanted, so
+// both spellings of, say, 360 have to be accepted.
+//
+
+bool
+isNumericLiteral (const ExprNodePtr &e, double value)
+{
+    if (FloatLiteralNodePtr f = e.cast<FloatLiteralNode>())
+	return f->value == value;
+
+    if (HalfLiteralNodePtr h = e.cast<HalfLiteralNode>())
+	return (double) h->value == value;
+
+    if (IntLiteralNodePtr i = e.cast<IntLiteralNode>())
+	return (double) i->value == value;
+
+    if (UIntLiteralNodePtr u = e.cast<UIntLiteralNode>())
+	return (double) u->value == value;
+
+    return false;
+}
+
+
+//
+// M_PI is defined by the standard library as a constant in a register
+// rather than as a literal, so it reaches code generation as a name.
+//
+
+bool
+isGlobalConstRef (const ExprNodePtr &e, const char *name)
+{
+    NameNodePtr n = e.cast<NameNode>();
+
+    return n && n->name == name && n->info && !isFrameRelative (n->info);
+}
+
+
+BinaryOpNode *
+asBinaryOp (const ExprNodePtr &e, Token op)
+{
+    BinaryOpNodePtr b = e.cast<BinaryOpNode>();
+
+    return (b && b->op == op) ? b.pointer() : 0;
+}
+
+
+//
+// How one helper requires another: the callee must already have been
+// recognized as computing the operation named by hint.
+//
+
+CallNode *
+asRecognizedCall (const ExprNodePtr &e, int hint, size_t argCount)
+{
+    CallNodePtr c = e.cast<CallNode>();
+
+    if (!c || c->arguments.size() != argCount)
+	return 0;
+
+    if (!c->function || !c->function->info)
+	return 0;
+
+    return (c->function->info->codeGenHint() == hint) ? c.pointer() : 0;
+}
+
+
+//
+// Is e a call to one of the standard library functions we are willing
+// to see inside a recognized body?  These are C functions in the symbol
+// table, so there is no CTL body to inspect; we identify them by name
+// and by the fact that they are not user-defined.
+//
+
+CallNode *
+asStdLibCall (const ExprNodePtr &e, const char *name, size_t argCount)
+{
+    CallNodePtr c = e.cast<CallNode>();
+
+    if (!c || c->arguments.size() != argCount)
+	return 0;
+
+    if (!c->function || c->function->name != name || !c->function->info)
+	return 0;
+
+    return c->function->info->addr().cast<SimdCFuncAddr>() ? c.pointer() : 0;
+}
+
+
+//
+// return <expr>;  as the function's whole body.
+//
+
+ExprNodePtr
+soleReturnValue (const StatementNodePtr &body)
+{
+    if (statementCount (body) != 1)
+	return 0;
+
+    ReturnNodePtr r = StatementNodePtr (statementAt (body, 0)).cast<ReturnNode>();
+
+    return r ? r->returnedValue : ExprNodePtr (0);
+}
+
+
+//
+//	float min (float a, float b)
+//	{
+//	    if (a < b)
+//		return a;
+//	    else
+//		return b;
+//	}
+//
+// max is the same shape with the comparison reversed, which is why op
+// is a parameter here.
+//
+
+bool
+isMinMaxBody (const StatementNodePtr &body, const FunctionTypePtr &ft, Token op)
+{
+    if (statementCount (body) != 1)
+	return false;
+
+    IfNodePtr n = StatementNodePtr (statementAt (body, 0)).cast<IfNode>();
+
+    if (!n)
+	return false;
+
+    BinaryOpNode *cond = asBinaryOp (n->condition, op);
+
+    if (!cond ||
+	!isParamRef (cond->leftOperand, ft, 0) ||
+	!isParamRef (cond->rightOperand, ft, 1))
+	return false;
+
+    if (statementCount (n->truePath) != 1 || statementCount (n->falsePath) != 1)
+	return false;
+
+    ReturnNodePtr t = StatementNodePtr (statementAt (n->truePath, 0)).cast<ReturnNode>();
+    ReturnNodePtr f = StatementNodePtr (statementAt (n->falsePath, 0)).cast<ReturnNode>();
+
+    return t && f &&
+	   isParamRef (t->returnedValue, ft, 0) &&
+	   isParamRef (f->returnedValue, ft, 1);
+}
+
+
+//
+//	float clip (float v)
+//	{
+//	    return min (v, 1.0);
+//	}
+//
+// Requires the min() being called to be a recognized min().
+//
+
+bool
+isClipBody (const StatementNodePtr &body, const FunctionTypePtr &ft)
+{
+    CallNode *c = asRecognizedCall (soleReturnValue (body), INLINE_MIN, 2);
+
+    return c &&
+	   isParamRef (c->arguments[0], ft, 0) &&
+	   isNumericLiteral (c->arguments[1], 1.0);
+}
+
+
+//
+//	float radians_to_degrees (float radians)	// scale 180, then / M_PI
+//	{
+//	    return radians * 180.0 / M_PI;
+//	}
+//
+//	float degrees_to_radians (float degrees)	// / 180, then scale M_PI
+//	{
+//	    return degrees / 180.0 * M_PI;
+//	}
+//
+// outer and inner are the two operators in source order; the two
+// conversions differ only in which is which, so the operand checks are
+// shared.
+//
+
+bool
+isAngleConversionBody (const StatementNodePtr &body,
+		       const FunctionTypePtr &ft,
+		       Token outer,
+		       Token inner)
+{
+    BinaryOpNode *o = asBinaryOp (soleReturnValue (body), outer);
+
+    if (!o || !isGlobalConstRef (o->rightOperand, "M_PI"))
+	return false;
+
+    BinaryOpNode *i = asBinaryOp (o->leftOperand, inner);
+
+    return i &&
+	   isParamRef (i->leftOperand, ft, 0) &&
+	   isNumericLiteral (i->rightOperand, 180.0);
+}
+
+
+//
+//	int sign (float x)
+//	{
+//	    int y;
+//	    if (x < 0)		y = -1;
+//	    else if (x > 0)	y = 1;
+//	    else		y = 0;
+//	    return y;
+//	}
+//
+// Never substituted on its own; recognized only so that copysign can
+// insist on a genuine sign().  A returns-int helper does not fit the
+// float call shape the inline templates use.
+//
+
+//
+// y = <value>;  where value may be negative.  A negated literal is
+// folded by the parser into a single literal, so there is no unary
+// minus node to look through here.
+//
+
+bool
+isSignedAssignment (const StatementNodePtr &s, const VariableNode *y, double value)
+{
+    if (statementCount (s) != 1)
+	return false;
+
+    AssignmentNodePtr a = StatementNodePtr (statementAt (s, 0)).cast<AssignmentNode>();
+
+    return a && isLocalRef (a->lhs, y) && isNumericLiteral (a->rhs, value);
+}
+
+
+bool
+isSignBody (const StatementNodePtr &body, const FunctionTypePtr &ft)
+{
+    if (statementCount (body) != 3)
+	return false;
+
+    VariableNodePtr y =
+	StatementNodePtr (statementAt (body, 0)).cast<VariableNode>();
+
+    if (!y || y->initialValue)
+	return false;
+
+    IfNodePtr neg = StatementNodePtr (statementAt (body, 1)).cast<IfNode>();
+
+    if (!neg)
+	return false;
+
+    BinaryOpNode *negCond = asBinaryOp (neg->condition, TK_LESS);
+
+    if (!negCond ||
+	!isParamRef (negCond->leftOperand, ft, 0) ||
+	!isNumericLiteral (negCond->rightOperand, 0.0))
+	return false;
+
+    if (!isSignedAssignment (neg->truePath, y.pointer(), -1.0))
+	return false;
+
+    //
+    // else if (x > 0) y = 1; else y = 0;
+    //
+
+    if (statementCount (neg->falsePath) != 1)
+	return false;
+
+    IfNodePtr pos = StatementNodePtr (statementAt (neg->falsePath, 0)).cast<IfNode>();
+
+    if (!pos)
+	return false;
+
+    BinaryOpNode *posCond = asBinaryOp (pos->condition, TK_GREATER);
+
+    if (!posCond ||
+	!isParamRef (posCond->leftOperand, ft, 0) ||
+	!isNumericLiteral (posCond->rightOperand, 0.0))
+	return false;
+
+    if (!isSignedAssignment (pos->truePath, y.pointer(), 1.0) ||
+	!isSignedAssignment (pos->falsePath, y.pointer(), 0.0))
+	return false;
+
+    ReturnNodePtr r = StatementNodePtr (statementAt (body, 2)).cast<ReturnNode>();
+
+    return r && isLocalRef (r->returnedValue, y.pointer());
+}
+
+
+//
+//	float copysign (float x, float y)
+//	{
+//	    return sign (y) * fabs (x);
+//	}
+//
+// Requires a recognized sign().  Note the argument order: sign takes
+// the second parameter, fabs the first.
+//
+
+bool
+isCopysignBody (const StatementNodePtr &body, const FunctionTypePtr &ft)
+{
+    BinaryOpNode *m = asBinaryOp (soleReturnValue (body), TK_TIMES);
+
+    if (!m)
+	return false;
+
+    CallNode *s = asRecognizedCall (m->leftOperand, INLINE_SIGN, 1);
+    CallNode *f = asStdLibCall (m->rightOperand, "fabs", 1);
+
+    return s && f &&
+	   isParamRef (s->arguments[0], ft, 1) &&
+	   isParamRef (f->arguments[0], ft, 0);
+}
+
+
+//
+//	float wrap_to_360 (float hue)
+//	{
+//	    float y = fmod (hue, 360.);
+//	    if (y < 0.)
+//		y = y + 360.;
+//	    return y;
+//	}
+//
+
+bool
+isWrapTo360Body (const StatementNodePtr &body, const FunctionTypePtr &ft)
+{
+    if (statementCount (body) != 3)
+	return false;
+
+    VariableNodePtr y =
+	StatementNodePtr (statementAt (body, 0)).cast<VariableNode>();
+
+    if (!y)
+	return false;
+
+    CallNode *mod = asStdLibCall (y->initialValue, "fmod", 2);
+
+    if (!mod ||
+	!isParamRef (mod->arguments[0], ft, 0) ||
+	!isNumericLiteral (mod->arguments[1], 360.0))
+	return false;
+
+    IfNodePtr n = StatementNodePtr (statementAt (body, 1)).cast<IfNode>();
+
+    if (!n || n->falsePath)
+	return false;
+
+    BinaryOpNode *cond = asBinaryOp (n->condition, TK_LESS);
+
+    if (!cond ||
+	!isLocalRef (cond->leftOperand, y.pointer()) ||
+	!isNumericLiteral (cond->rightOperand, 0.0))
+	return false;
+
+    if (statementCount (n->truePath) != 1)
+	return false;
+
+    AssignmentNodePtr a =
+	StatementNodePtr (statementAt (n->truePath, 0)).cast<AssignmentNode>();
+
+    if (!a || !isLocalRef (a->lhs, y.pointer()))
+	return false;
+
+    BinaryOpNode *sum = asBinaryOp (a->rhs, TK_PLUS);
+
+    if (!sum ||
+	!isLocalRef (sum->leftOperand, y.pointer()) ||
+	!isNumericLiteral (sum->rightOperand, 360.0))
+	return false;
+
+    ReturnNodePtr r = StatementNodePtr (statementAt (body, 2)).cast<ReturnNode>();
+
+    return r && isLocalRef (r->returnedValue, y.pointer());
+}
+
+} // namespace
+
+
+//
+// Decide what, if anything, a function definition computes.  Called
+// once per definition; the answer is recorded on the function's symbol.
+//
+// The signature is checked first because it is cheap and rules out
+// almost everything, then the body decides.
+//
+
+static int
+recognizeHelperBody (const FunctionTypePtr &ft, const StatementNodePtr &body)
+{
+    if (!ft || !body)
+	return INLINE_NONE;
+
+    const ParamVector &params = ft->parameters();
+
+    for (size_t i = 0; i < params.size(); i++)
+	if (!params[i].type.cast<FloatType>() || params[i].isWritable())
+	    return INLINE_NONE;
+
+    if (ft->returnType().cast<IntType>() && params.size() == 1)
+	return isSignBody (body, ft) ? INLINE_SIGN : INLINE_NONE;
+
+    if (!ft->returnType().cast<FloatType>())
+	return INLINE_NONE;
+
+    if (params.size() == 2)
+    {
+	if (isMinMaxBody (body, ft, TK_LESS))	 return INLINE_MIN;
+	if (isMinMaxBody (body, ft, TK_GREATER)) return INLINE_MAX;
+	if (isCopysignBody (body, ft))		 return INLINE_COPYSIGN;
+    }
+    else if (params.size() == 1)
+    {
+	if (isClipBody (body, ft))		 return INLINE_CLIP;
+	if (isWrapTo360Body (body, ft))		 return INLINE_WRAP_TO_360;
+
+	if (isAngleConversionBody (body, ft, TK_DIV, TK_TIMES))
+	    return INLINE_RAD_TO_DEG;
+
+	if (isAngleConversionBody (body, ft, TK_TIMES, TK_DIV))
+	    return INLINE_DEG_TO_RAD;
+    }
+
+    return INLINE_NONE;
+}
+
+
 void
 SimdCallNode::generateCode (LContext &lcontext)
 {
@@ -1109,11 +1743,61 @@ SimdCallNode::generateCode (LContext &lcontext)
     FunctionTypePtr functionType = info->functionType();
 
     //
+    // If the function being called was recognized, when it was defined,
+    // as computing one of the operations we have a direct implementation
+    // for, emit that implementation instead of a call into its body.
+    //
+    // The decision was made from the body itself and recorded on the
+    // symbol, so a function that merely shares a name with one of these
+    // operations is not affected: its hint is INLINE_NONE and it
+    // compiles into an ordinary call, below.
+    //
+    // The arg-push / return-slot layout is identical to the SimdCallInst
+    // path the CTL function call would produce, so stack and scratch
+    // bookkeeping are unchanged.
+    //
+
+    SimdCFunc cf = 0;
+
+    switch (info->codeGenHint())
+    {
+      case INLINE_MIN:	      cf = simdFunc2Arg<InlineMinFloat>;       break;
+      case INLINE_MAX:	      cf = simdFunc2Arg<InlineMaxFloat>;       break;
+      case INLINE_CLIP:	      cf = simdFunc1Arg<InlineClipFloat>;      break;
+      case INLINE_RAD_TO_DEG: cf = simdFunc1Arg<InlineRadToDegFloat>;  break;
+      case INLINE_DEG_TO_RAD: cf = simdFunc1Arg<InlineDegToRadFloat>;  break;
+      case INLINE_COPYSIGN:   cf = simdFunc2Arg<InlineCopysignFloat>;  break;
+      case INLINE_WRAP_TO_360:cf = simdFunc1Arg<InlineWrapTo360Float>; break;
+      default:		      cf = 0;			             break;
+    }
+
+    if (cf)
+    {
+	functionType->returnType()->generateCode (this, lcontext);
+
+	const ParamVector &params = functionType->parameters();
+	for (int i = (int)params.size() - 1; i >= 0; --i)
+	{
+	    ExprNodePtr a = (i < (int)arguments.size())
+		            ? arguments[i] : params[i].defaultValue;
+	    a->generateCode (lcontext);
+	    params[i].type->generateCastFrom (a, lcontext);
+	}
+
+	slcontext.addInst (new SimdCCallInst (cf,
+					      (int)params.size(),
+					      lineNumber));
+	slcontext.addInst (new SimdFileNameInst (lcontext.fileName(),
+						 lineNumber));
+	return;
+    }
+
+    //
     // Reserve space on the stack for the function's return value
     //
 
     functionType->returnType()->generateCode (this, lcontext);
-    
+
     //
     // Push the arguments for the call onto the stack.
     //

@@ -64,10 +64,55 @@
 
 #include <CtlSimdStdTypes.h>
 #include <CtlSimdCFunc.h>
+#include <CtlSimdInterpreter.h>
 #include <CtlSimdReg.h>
 #include <CtlSimdXContext.h>
 
 namespace Ctl {
+
+//
+// Hot-path batch traits.  The primary templates run scalar per-lane
+// loops; specializations (e.g. for Accelerate vForce) may replace the
+// hot contiguous-varying inner loop with a batched library call.
+// Uniform and masked lanes still go through Func::call.  Two traits
+// because 1-arg Funcs have no Arg2T and instantiating a unified trait
+// for them would fail template signature instantiation.
+//
+
+template <class Func>
+struct SimdFuncBatch1
+{
+    static void run1 (const typename Func::Arg1T *in,
+		      typename Func::ReturnT *out, int n)
+    {
+	while (n-- > 0) *(out++) = Func::call (*(in++));
+    }
+};
+
+template <class Func>
+struct SimdFuncBatch2
+{
+    static void run2_vv (const typename Func::Arg1T *a1,
+			 const typename Func::Arg2T *a2,
+			 typename Func::ReturnT *out, int n)
+    {
+	while (n-- > 0) *(out++) = Func::call (*(a1++), *(a2++));
+    }
+
+    static void run2_vu (const typename Func::Arg1T *a1,
+			 const typename Func::Arg2T &a2,
+			 typename Func::ReturnT *out, int n)
+    {
+	while (n-- > 0) *(out++) = Func::call (*(a1++), a2);
+    }
+
+    static void run2_uv (const typename Func::Arg1T &a1,
+			 const typename Func::Arg2T *a2,
+			 typename Func::ReturnT *out, int n)
+    {
+	while (n-- > 0) *(out++) = Func::call (a1, *(a2++));
+    }
+};
 
 //
 // Templated functions with one, two or more arguments that can be called
@@ -86,14 +131,21 @@ simdFunc1Arg (const SimdBoolMask &mask, SimdXContext &xcontext)
     {
 	if (!mask.isVarying() &&
 	    !a1.isReference() &&
-	    !returnValue.isReference())
+	    !returnValue.isReference() &&
+	    xcontext.interpreter().useBatchedMath())
 	{
 	    //
-	    // Mask is uniform and a1 and the return value
-	    // are contiguous in memory.
+	    // Mask is uniform, a1 and the return value are contiguous
+	    // in memory, and the interpreter has batched-math dispatch
+	    // enabled.
 	    //
 
-	    returnValue.setVaryingDiscardData (true);
+	    // !returnValue.isReference() already on the guard above, so
+	    // _oVarying is false and isVarying() == _varying.  Skip the
+	    // no-op call on the hot path where returnValue has already
+	    // been promoted varying by an earlier tile.
+	    if (!returnValue.isVarying())
+		returnValue.setVaryingDiscardData (true);
 
 	    const typename Func::Arg1T *a1Ptr =
 				(typename Func::Arg1T *)(a1[0]);
@@ -101,11 +153,7 @@ simdFunc1Arg (const SimdBoolMask &mask, SimdXContext &xcontext)
 	    typename Func::ReturnT *returnPtr =
 				(typename Func::ReturnT *)(returnValue[0]);
 
-	    typename Func::ReturnT *returnEnd =
-				returnPtr + xcontext.regSize();
-
-	    while (returnPtr < returnEnd)
-		*(returnPtr++) = Func::call (*(a1Ptr++));
+	    SimdFuncBatch1<Func>::run1 (a1Ptr, returnPtr, xcontext.regSize());
 	}
 	else
 	{
@@ -145,14 +193,21 @@ simdFunc2Arg (const SimdBoolMask &mask, SimdXContext &xcontext)
 	if (!mask.isVarying() &&
 	    !a1.isReference() &&
 	    !a2.isReference() &&
-	    !returnValue.isReference())
+	    !returnValue.isReference() &&
+	    xcontext.interpreter().useBatchedMath())
 	{
 	    //
-	    // Mask is uniform and a1, a2 and the return value are
-	    // contiguous in memory.  A1, a2 or both are varying.
+	    // Mask is uniform, a1, a2 and the return value are
+	    // contiguous in memory, and the interpreter has batched-
+	    // math dispatch enabled.  A1, a2 or both are varying.
 	    //
 
-	    returnValue.setVaryingDiscardData (true);
+	    // !returnValue.isReference() already on the guard above, so
+	    // _oVarying is false and isVarying() == _varying.  Skip the
+	    // no-op call on the hot path where returnValue has already
+	    // been promoted varying by an earlier tile.
+	    if (!returnValue.isVarying())
+		returnValue.setVaryingDiscardData (true);
 
 	    const typename Func::Arg1T *a1Ptr =
 				(typename Func::Arg1T *)(a1[0]);
@@ -163,23 +218,19 @@ simdFunc2Arg (const SimdBoolMask &mask, SimdXContext &xcontext)
 	    typename Func::ReturnT *returnPtr =
 				(typename Func::ReturnT *)(returnValue[0]);
 
-	    typename Func::ReturnT *returnEnd =
-				returnPtr + xcontext.regSize();
+	    int n = xcontext.regSize();
 
 	    if (a1.isVarying() && a2.isVarying())
 	    {
-		while (returnPtr < returnEnd)
-		    *(returnPtr++) = Func::call (*(a1Ptr++), *(a2Ptr++));
+		SimdFuncBatch2<Func>::run2_vv (a1Ptr, a2Ptr, returnPtr, n);
 	    }
 	    else if (a1.isVarying())
 	    {
-		while (returnPtr < returnEnd)
-		    *(returnPtr++) = Func::call (*(a1Ptr++), *(a2Ptr));
+		SimdFuncBatch2<Func>::run2_vu (a1Ptr, *a2Ptr, returnPtr, n);
 	    }
 	    else
 	    {
-		while (returnPtr < returnEnd)
-		    *(returnPtr++) = Func::call (*(a1Ptr), *(a2Ptr++));
+		SimdFuncBatch2<Func>::run2_uv (*a1Ptr, a2Ptr, returnPtr, n);
 	    }
 	}
 	else

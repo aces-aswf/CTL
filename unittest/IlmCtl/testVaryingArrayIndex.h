@@ -1,0 +1,11 @@
+///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the CTL project.
+// SPDX-License-Identifier: BSD-3-Clause
+///////////////////////////////////////////////////////////////////////////
+
+#ifndef INCLUDED_TEST_VARYING_ARRAY_INDEX_H
+#define INCLUDED_TEST_VARYING_ARRAY_INDEX_H
+
+void testVaryingArrayIndex();
+
+#endif

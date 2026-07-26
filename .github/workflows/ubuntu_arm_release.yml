@@ -394,5 +394,64 @@ jobs:
     
     - name: Run Valgrind on unit tests
       working-directory: ${{github.workspace}}/build
-      # Run valgrind using a bash script  
+      # Run valgrind using a bash script
       run: pwd && ls && bash ../resources/test/scripts/run_valgrind.sh
+
+  test-openexr3-sleef:
+    # Phase A+ coverage: build with -DCTL_USE_SLEEF=ON so the vectorized
+    # transcendental path is exercised on Linux arm64 (NEON advsimd
+    # baseline).  Validates the sleef specializations build, link, and
+    # pass all fixtures under the <=1 ULP contract on non-Apple arm64.
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+
+    - name: run apt-get update
+      run: sudo apt-get -y update
+
+    - name: remove ilmbase
+      run: sudo apt-get --purge remove libilmbase-dev -y
+
+    - name: remove openexr
+      run: sudo apt-get --purge remove libopenexr-dev -y
+
+    - name: install dependencies - imath
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/Imath.git &&
+        cd Imath &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - name: install dependencies - zlib
+      run: sudo apt-get -y install zlib1g-dev
+
+    - name: install dependencies - openexr v3.1
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/openexr.git &&
+        cd openexr &&
+        git checkout RB-3.1 &&
+        mkdir build &&
+        cd build &&
+        cmake .. -DBUILD_TESTING=OFF -DOPENEXR_BUILD_TOOLS=OFF -DOPENEXR_INSTALL_EXAMPLES=OFF &&
+        make  &&
+        sudo make install
+
+    - name: install sleef
+      run: sudo apt-get -y install libsleef-dev
+
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCTL_USE_SLEEF=ON
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -V --output-on-failure

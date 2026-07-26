@@ -59,11 +59,30 @@
 //-----------------------------------------------------------------------------
 
 #include <CtlSimdReg.h>
+#include <CtlSimdArena.h>
 #include <sstream>
+#include <algorithm>
+#include <cstdint>
 
 
 
 namespace Ctl {
+
+namespace detail {
+
+BoolBufferPool &
+boolBufferPool ()
+{
+    // One pool per thread: under Phase-B tile dispatch each worker's mask
+    // traffic (trueMask/falseMask/loopMask/callMask, all stack-scoped)
+    // reuses the same ~10-20 cache-hot 8 KB buffers without any locking.
+    static thread_local BoolBufferPool pool;
+    return pool;
+}
+
+} // namespace detail
+
+
 namespace {
 
 size_t zeroOffsetPlaceholder = 0;
@@ -77,19 +96,111 @@ throwIndexOutOfRange (int index, int size)
 	   "array size = " << size << ").");
 }
 
+
+// Broadcast one `eSize`-byte element across `count` slots of `dst`.  Dispatches
+// to a typed fill for the 4 sizes that cover ~every CTL scalar register
+// (bool/char, short, float/int32, double/int64); callers on float dominate the
+// hot path (SimdReg::setVarying under SimdAssignInst at 20.9% of wall-clock).
+// For other sizes, falls back to memcpy-in-loop.  dst alignment: arena gives
+// 16 B, `new char[]` gives max_align_t (>= 16 B on every target) so the typed
+// casts are well-defined.
+inline void
+broadcastElement (char *dst, const char *src, size_t eSize, size_t count)
+{
+    switch (eSize)
+    {
+        case 1:
+            std::memset (dst, *reinterpret_cast<const unsigned char*>(src),
+                         count);
+            break;
+        case 2:
+        {
+            uint16_t v;
+            std::memcpy (&v, src, sizeof v);
+            std::fill_n (reinterpret_cast<uint16_t*>(dst), count, v);
+            break;
+        }
+        case 4:
+        {
+            uint32_t v;
+            std::memcpy (&v, src, sizeof v);
+            std::fill_n (reinterpret_cast<uint32_t*>(dst), count, v);
+            break;
+        }
+        case 8:
+        {
+            uint64_t v;
+            std::memcpy (&v, src, sizeof v);
+            std::fill_n (reinterpret_cast<uint64_t*>(dst), count, v);
+            break;
+        }
+        default:
+            for (size_t i = 0; i < count; ++i)
+                std::memcpy (dst + i * eSize, src, eSize);
+            break;
+    }
+}
+
 } // namespace
 
 size_t *SimdReg::zeroOffset = &zeroOffsetPlaceholder;
 
 
 SimdReg::SimdReg (bool varying, size_t elementSize)
-: _eSize(elementSize), 
-  _varying(varying), 
+: _eSize(elementSize),
+  _varying(varying),
   _oVarying(false),
+  _dataOwned(true),
+  _arenaOwned(false),
   _offsets(zeroOffset),
   _data (new char [ varying ? MAX_REG_SIZE * _eSize : _eSize]()),
-  _ref(0)
+  _ref(0),
+  _arena(0)
 {
+}
+
+
+SimdReg::SimdReg (bool varying, size_t elementSize, SimdArena &arena)
+: SimdReg(varying, elementSize, arena, true)
+{
+}
+
+
+SimdReg::SimdReg (bool varying, size_t elementSize, SimdArena &arena,
+		  bool zeroInit)
+: _eSize(elementSize),
+  _varying(varying),
+  _oVarying(false),
+  _dataOwned(false),
+  _arenaOwned(false),
+  _offsets(zeroOffset),
+  _data(0),
+  _ref(0),
+  _arena(&arena)
+{
+    const size_t nbytes = varying ? MAX_REG_SIZE * _eSize : _eSize;
+    _data = arena.allocate(nbytes);
+
+    if (!_data)
+    {
+	// Arena exhausted (malloc inside grow() failed). Fall back to
+	// heap-owned storage so the op does not lose correctness.  Use
+	// the zero-init new[] form whenever the caller asked for zero
+	// (matches the scalar ctor); the uninit path skips zeroing
+	// here too -- the caller has promised a full-write.
+	_data = zeroInit ? new char [nbytes]() : new char [nbytes];
+	_dataOwned = true;
+	return;
+    }
+
+    if (zeroInit)
+    {
+	// Partial-write consumers (varying mask, references, merge-both-
+	// paths ternary with neither-branch-taken lanes) rely on unwritten
+	// lanes being zero so a later contiguous memcpy under a uniform
+	// mask does not propagate uninitialized memory.
+	std::memset (_data, 0, nbytes);
+    }
 }
 
 
@@ -105,9 +216,12 @@ SimdReg::SimdReg
        : _eSize(r._eSize),
 	 _varying(r._varying),
 	 _oVarying(indReg.isVarying() || r._oVarying),
+	 _dataOwned(transferData && r._data ? r._dataOwned : true),
+	 _arenaOwned(false),
 	 _offsets(new size_t [_oVarying ? MAX_REG_SIZE : 1]),
 	 _data(transferData && r._data ? r._data : 0),
-         _ref(transferData && r._data ? this : (r._ref ? r._ref : &r))
+         _ref(transferData && r._data ? this : (r._ref ? r._ref : &r)),
+         _arena(r._arena)
 {
     if( _oVarying )
     {
@@ -170,9 +284,12 @@ SimdReg::SimdReg
        : _eSize(r._eSize),
 	 _varying(r._varying),
 	 _oVarying(r._oVarying),
+	 _dataOwned(transferData && r._data ? r._dataOwned : true),
+	 _arenaOwned(false),
 	 _offsets(new size_t [_oVarying ? MAX_REG_SIZE : 1]),
 	 _data(transferData && r._data ? r._data : 0),
-         _ref(transferData && r._data ? this : (r._ref ? r._ref : &r))
+         _ref(transferData && r._data ? this : (r._ref ? r._ref : &r)),
+         _arena(r._arena)
 {
     if( _oVarying )
     {
@@ -205,7 +322,36 @@ SimdReg::~SimdReg ()
     if( _offsets != zeroOffset)
 	delete [] _offsets;
 
-    delete [] _data;
+    if (_dataOwned)
+	delete [] _data;
+}
+
+
+SimdReg *
+SimdReg::createInArena (SimdArena &arena,
+			bool varying,
+			size_t elementSize,
+			bool zeroInit)
+{
+    char *mem = arena.allocate (sizeof (SimdReg));
+    if (!mem)
+	return new SimdReg (varying, elementSize, arena, zeroInit);
+
+    SimdReg *reg = new (mem) SimdReg (varying, elementSize, arena, zeroInit);
+    reg->_arenaOwned = true;
+    return reg;
+}
+
+
+void
+SimdReg::destroy (SimdReg *reg)
+{
+    if (!reg)
+	return;
+    if (reg->_arenaOwned)
+	reg->~SimdReg ();
+    else
+	delete reg;
 }
 
 
@@ -227,7 +373,8 @@ SimdReg::reference(SimdReg &r,
     }
     _oVarying = r._oVarying;
 
-    delete [] _data;
+    if (_dataOwned)
+	delete [] _data;
 
     //
     // If we are tranfering the ownership, and the original is not a reference
@@ -236,12 +383,14 @@ SimdReg::reference(SimdReg &r,
     {
 	_ref =  this;
 	_data =  r._data;
+	_dataOwned = r._dataOwned;
 	r._data = 0;
     }
     else
     {
 	_ref = r._ref ? r._ref : &r;
 	_data = 0;
+	_dataOwned = false;
     }
 
     if( _oVarying )
@@ -252,7 +401,7 @@ SimdReg::reference(SimdReg &r,
 }
 
 
-void 
+void
 SimdReg::setVarying (bool varying)
 {
     if(_ref)
@@ -261,26 +410,36 @@ SimdReg::setVarying (bool varying)
     }
     else if (varying != _varying)
     {
-        char *data = new char [varying? MAX_REG_SIZE * _eSize: _eSize];
+	const size_t nbytes = varying ? MAX_REG_SIZE * _eSize : _eSize;
+	char *data = 0;
+	bool owned = true;
+	if (_arena)
+	{
+	    data = _arena->allocate (nbytes);
+	    if (data) owned = false;
+	}
+	if (!data)
+	    data = new char [nbytes];
 
 	if (varying)
 	{
- 	    for (int i = 0; i < MAX_REG_SIZE; i++)
-		memcpy (data + (i * _eSize), _data, _eSize);
+	    broadcastElement (data, _data, _eSize, MAX_REG_SIZE);
 	}
 	else
 	{
 	    memcpy (data, _data, _eSize);
 	}
 
-	delete [] _data;
+	if (_dataOwned)
+	    delete [] _data;
  	_data = data;
+	_dataOwned = owned;
 	_varying = varying;
     }
 }
 
 
-void 
+void
 SimdReg::setVaryingDiscardData (bool varying)
 {
     if(_ref)
@@ -289,9 +448,21 @@ SimdReg::setVaryingDiscardData (bool varying)
     }
     else if (varying != _varying)
     {
-        char *data = new char [varying? MAX_REG_SIZE * _eSize: _eSize];
-	delete [] _data;
+	const size_t nbytes = varying ? MAX_REG_SIZE * _eSize : _eSize;
+	char *data = 0;
+	bool owned = true;
+	if (_arena)
+	{
+	    data = _arena->allocate (nbytes);
+	    if (data) owned = false;
+	}
+	if (!data)
+	    data = new char [nbytes];
+
+	if (_dataOwned)
+	    delete [] _data;
  	_data = data;
+	_dataOwned = owned;
 	_varying = varying;
     }
 }

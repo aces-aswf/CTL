@@ -137,7 +137,10 @@ updateMask (SimdBoolMask &parentMask,
 } // namespace
 
 
-SimdInst::SimdInst (int lineNumber): _lineNumber(lineNumber), _nextInPath (0)
+SimdInst::SimdInst (ExecThunk thunk, int lineNumber):
+    _execThunk (thunk),
+    _lineNumber (lineNumber),
+    _nextInPath (0)
 {
     // empty
 }
@@ -184,7 +187,7 @@ SimdInst::executePath (SimdBoolMask &mask, SimdXContext &xcontext) const
 	try
 	{
 	    xcontext.countInstruction();
-	    inst->execute (mask, xcontext);
+	    inst->_execThunk (inst, mask, xcontext);
 	}
         catch (Iex::BaseExc &e)
 	{
@@ -227,7 +230,7 @@ SimdBranchInst::SimdBranchInst
      bool mergeResults,
      int lineNumber)
 :
-	SimdInst(lineNumber),
+	SimdInst(&simdExecThunk<SimdBranchInst>, lineNumber),
 	_truePath (truePath),
 	_falsePath (falsePath),
 	_mergeResults (mergeResults)
@@ -245,21 +248,24 @@ SimdBranchInst::execute (SimdBoolMask &mask, SimdXContext &xcontext) const
     if (condition.isVarying())
     {
 	SimdBoolMask trueMask (true);
-	bool takeTruePath = false;
-
-	for (int i = xcontext.regSize(); --i >= 0;)
-	{
-	    trueMask[i] = (mask[i] & *(bool *)(condition[i]));
-	    takeTruePath |= trueMask[i];
-	}
-
 	SimdBoolMask falseMask (true);
+	bool takeTruePath = false;
 	bool takeFalsePath = false;
 
+	// Single-pass fusion of the previously-separate trueMask/falseMask
+	// builds.  Keeps mask[i] and condition[i] hot in one cache-friendly
+	// walk instead of two; halves the per-branch memory-traffic share
+	// of SimdBranchInst::execute (24.9% of wall-clock on aces_combined).
 	for (int i = xcontext.regSize(); --i >= 0;)
 	{
-	    falseMask[i] = (mask[i] & !*(bool *)(condition[i]));
-	    takeFalsePath |= falseMask[i];
+	    const bool mi = mask[i];
+	    const bool ci = *(const bool *)(condition[i]);
+	    const bool t  = mi & ci;
+	    const bool f  = mi & !ci;
+	    trueMask[i]  = t;
+	    falseMask[i] = f;
+	    takeTruePath  |= t;
+	    takeFalsePath |= f;
 	}
 
 	xcontext.stack().pop (1);
@@ -298,7 +304,11 @@ SimdBranchInst::execute (SimdBoolMask &mask, SimdXContext &xcontext) const
 	    const SimdReg &fReg = xcontext.stack().regSpRelative (-1);
 
 	    size_t eSize = tReg.elementSize();
-	    SimdReg *outReg = new SimdReg(true, eSize);
+	    // Skip the arena ctor's memset: the loop below writes every
+	    // lane (tReg, fReg, or zero for neither-branch-taken lanes).
+	    SimdReg *outReg = SimdReg::createInArena (xcontext.arena(),
+						      true, eSize,
+						      /*zeroInit=*/false);
 
 	    try
 	    {
@@ -308,6 +318,8 @@ SimdBranchInst::execute (SimdBoolMask &mask, SimdXContext &xcontext) const
 			memcpy ((*outReg)[i], tReg[i], eSize);
 		    else if( falseMask[i] )
 			memcpy ((*outReg)[i], fReg[i], eSize);
+		    else
+			memset ((*outReg)[i], 0, eSize);
 		}
 
 		xcontext.stack().pop(2);
@@ -315,7 +327,7 @@ SimdBranchInst::execute (SimdBoolMask &mask, SimdXContext &xcontext) const
 	    }
             catch (...)
 	    {
-		delete outReg;
+		SimdReg::destroy (outReg);
 		throw;
 	    }
 	}
@@ -370,7 +382,7 @@ SimdLoopInst::SimdLoopInst
      const SimdInst *loopPath,
      int lineNumber)
 :
-    SimdInst(lineNumber),
+    SimdInst(&simdExecThunk<SimdLoopInst>, lineNumber),
     _conditionPath (conditionPath),
     _loopPath (loopPath)
 {
@@ -448,10 +460,11 @@ SimdLoopInst::print (int indent) const
 }
 
 
-SimdCallInst::SimdCallInst (const SimdInst *callPath, 
-			    int numParameters, 
+SimdCallInst::SimdCallInst (const SimdInst *callPath,
+			    int numParameters,
 			    int lineNumber)
-    : SimdInst(lineNumber), _callPath (callPath), _numParameters(numParameters)
+    : SimdInst(&simdExecThunk<SimdCallInst>, lineNumber),
+      _callPath (callPath), _numParameters(numParameters)
 {
     // empty
 }
@@ -494,7 +507,8 @@ SimdCallInst::print (int indent) const
 
 
 SimdCCallInst::SimdCCallInst (SimdCFunc func, int numParameters, int lineNumber)
-    : SimdInst(lineNumber), _func (func), _numParameters(numParameters)
+    : SimdInst(&simdExecThunk<SimdCCallInst>, lineNumber),
+      _func (func), _numParameters(numParameters)
 {
     // empty
 }
@@ -520,7 +534,8 @@ SimdCCallInst::print (int indent) const
 }
 
 
-SimdReturnInst::SimdReturnInst (int lineNumber): SimdInst(lineNumber)
+SimdReturnInst::SimdReturnInst (int lineNumber)
+    : SimdInst(&simdExecThunk<SimdReturnInst>, lineNumber)
 {
     // empty
 }
@@ -574,7 +589,7 @@ SimdPushStringLiteralInst::SimdPushStringLiteralInst
     (const string &value,
      int lineNumber)
 :
-    SimdInst (lineNumber),
+    SimdInst (&simdExecThunk<SimdPushStringLiteralInst>, lineNumber),
     _value (value)
 {
     // empty
@@ -586,7 +601,11 @@ SimdPushStringLiteralInst::execute
     (SimdBoolMask &mask,
      SimdXContext &xcontext) const
 {
-    SimdReg *out = new SimdReg (false, sizeof (string *));
+    // Uniform pointer-sized reg -- pointer store below full-writes the value.
+    SimdReg *out = SimdReg::createInArena (xcontext.arena(),
+					   /*varying=*/false,
+					   sizeof (string *),
+					   /*zeroInit=*/false);
     xcontext.stack().push (out, TAKE_OWNERSHIP);
     *(const string**)(*out)[0] = &_value;
 }
@@ -601,7 +620,7 @@ SimdPushStringLiteralInst::print (int indent) const
 
 
 SimdPushRefInst::SimdPushRefInst (const SimdDataAddrPtr &in, int lineNumber)
-    : SimdInst(lineNumber), _in (in)
+    : SimdInst(&simdExecThunk<SimdPushRefInst>, lineNumber), _in (in)
 {
     // empty
 }
@@ -627,7 +646,7 @@ SimdPushRefInst::print (int indent) const
 
 
 SimdPopInst::SimdPopInst (int numRegs, int lineNumber)
-    : SimdInst(lineNumber), _numRegs (numRegs)
+    : SimdInst(&simdExecThunk<SimdPopInst>, lineNumber), _numRegs (numRegs)
 {
     // empty
 }
@@ -650,7 +669,8 @@ SimdPopInst::print (int indent) const
 
 
 SimdAssignInst::SimdAssignInst (size_t opTypeSize, int lineNumber)
-    : SimdInst(lineNumber), _opTypeSize(opTypeSize)
+    : SimdInst(&simdExecThunk<SimdAssignInst>, lineNumber),
+      _opTypeSize(opTypeSize)
 {
     // empty
 }
@@ -675,7 +695,12 @@ SimdAssignInst::execute
 	    // The contents of in and out are contiguous in memory.
 	    //
 
-	    out.setVaryingDiscardData (true);
+	    // !out.isReference() is already on the guard above, so
+	    // out._oVarying is false and isVarying() == out._varying.
+	    // Skip the no-op setVaryingDiscardData call on the hot path
+	    // where out has already been promoted varying by an earlier tile.
+	    if (!out.isVarying())
+		out.setVaryingDiscardData (true);
 	    memcpy (out[0], in[0], xcontext.regSize() * _opTypeSize);
 	}
 	else
@@ -721,11 +746,12 @@ SimdAssignInst::print (int indent) const
 
 
 
-SimdInitializeInst::SimdInitializeInst 
-    (const SizeVector &sizes, 
+SimdInitializeInst::SimdInitializeInst
+    (const SizeVector &sizes,
      const SizeVector &offsets,
      int lineNumber)
-	: SimdInst(lineNumber), _sizes(sizes), _offsets(offsets)
+	: SimdInst(&simdExecThunk<SimdInitializeInst>, lineNumber),
+	  _sizes(sizes), _offsets(offsets)
 {
     // empty
 }
@@ -787,7 +813,8 @@ SimdInitializeInst::print (int indent) const
 
 SimdAssignArrayInst::SimdAssignArrayInst (int size, size_t opTypeSize,
 					  int lineNumber)
-    : SimdInst(lineNumber), _size(size), _opTypeSize(opTypeSize)
+    : SimdInst(&simdExecThunk<SimdAssignArrayInst>, lineNumber),
+      _size(size), _opTypeSize(opTypeSize)
 {
     // empty
 }
@@ -801,22 +828,40 @@ SimdAssignArrayInst::execute
     const SimdReg &in = xcontext.stack().regSpRelative(-1);
     SimdReg &out = xcontext.stack().regSpRelative(-2);
 
+    const size_t elemBytes = _size * _opTypeSize;
+
     if (in.isVarying() || mask.isVarying())
     {
-	out.setVarying (true);
-	for( int j = 0; j < xcontext.regSize(); j++)
+	if (!mask.isVarying() &&
+	    !in.isReference() &&
+	    !out.isReference() &&
+	    (in[1] - in[0] == (int)elemBytes))
 	{
-	    if(mask[j])
-	    {
-		memcpy(out[j], in[j], _size*_opTypeSize);
-	    }
+	    // Uniform mask, contiguous in/out: one big memcpy beats
+	    // regSize per-lane memcpys of elemBytes (12 B for float[3],
+	    // 36 B for M33f) by eliminating the per-call platform_memmove
+	    // dispatch on every lane.
 
+	    if (!out.isVarying())
+		out.setVaryingDiscardData (true);
+	    memcpy (out[0], in[0], xcontext.regSize() * elemBytes);
+	}
+	else
+	{
+	    out.setVarying (true);
+	    for (int j = 0; j < xcontext.regSize(); j++)
+	    {
+		if (mask[j])
+		{
+		    memcpy (out[j], in[j], elemBytes);
+		}
+	    }
 	}
     }
     else
     {
 	out.setVarying (false);
-	memcpy( out[0], in[0], _size*_opTypeSize);
+	memcpy (out[0], in[0], elemBytes);
     }
     xcontext.stack().pop (2);
 }
@@ -832,10 +877,10 @@ SimdAssignArrayInst::print (int indent) const
 
 
 
-SimdIndexArrayInst::SimdIndexArrayInst (size_t arrayElementSize, 
+SimdIndexArrayInst::SimdIndexArrayInst (size_t arrayElementSize,
 					int lineNumber,
 					size_t arraySize)
-    : SimdInst(lineNumber), 
+    : SimdInst(&simdExecThunk<SimdIndexArrayInst>, lineNumber),
       _arrayElementSize(arrayElementSize),
       _arraySize(arraySize)
 {
@@ -878,13 +923,13 @@ SimdIndexArrayInst::print (int indent) const
 		 "Index Array " << std::endl;
 }
 
-SimdIndexVSArrayInst::SimdIndexVSArrayInst 
+SimdIndexVSArrayInst::SimdIndexVSArrayInst
   (size_t arrayElementSize,
-   const SimdDataAddrPtr &arrayElementSizePtr, 
+   const SimdDataAddrPtr &arrayElementSizePtr,
    size_t arraySize,
    const SimdDataAddrPtr &arraySizePtr,
    int lineNumber)
-    : SimdInst(lineNumber), 
+    : SimdInst(&simdExecThunk<SimdIndexVSArrayInst>, lineNumber),
       _arrayElementSize(arrayElementSize),
       _arrayElementSizePtr(arrayElementSizePtr),
       _arraySize(arraySize),
@@ -944,7 +989,8 @@ SimdIndexVSArrayInst::print (int indent) const
 
 
 SimdAccessMemberInst::SimdAccessMemberInst  (size_t offset, int lineNumber)
-    : SimdInst(lineNumber), _offset(offset)
+    : SimdInst(&simdExecThunk<SimdAccessMemberInst>, lineNumber),
+      _offset(offset)
 {
     // empty
 }
@@ -985,9 +1031,10 @@ SimdAccessMemberInst::print (int indent) const
 
 
 
-SimdPushPlaceholderInst::SimdPushPlaceholderInst 
+SimdPushPlaceholderInst::SimdPushPlaceholderInst
    (size_t eSize, int lineNumber)
-       : SimdInst(lineNumber), _eSize(eSize)
+       : SimdInst(&simdExecThunk<SimdPushPlaceholderInst>, lineNumber),
+	 _eSize(eSize)
 {
     // empty
 }
@@ -998,17 +1045,14 @@ SimdPushPlaceholderInst::execute
     (SimdBoolMask &mask,
      SimdXContext &xcontext) const
 {
-    SimdReg *out = new SimdReg(false, _eSize);
-    try
-    {
-	xcontext.stack().push (out, TAKE_OWNERSHIP);
-	memset((*out)[0],  0, _eSize);
-    }
-    catch (...)
-    {
-	delete out;
-	throw;
-    }
+    // Uniform placeholder slot.  createInArena with zeroInit=true does the
+    // zero-fill the old explicit memset used to do; if push() throws on
+    // overflow the stack already calls SimdReg::destroy on the reg.
+    SimdReg *out = SimdReg::createInArena (xcontext.arena(),
+					   /*varying=*/false,
+					   _eSize,
+					   /*zeroInit=*/true);
+    xcontext.stack().push (out, TAKE_OWNERSHIP);
 }
 
 void
@@ -1019,7 +1063,8 @@ SimdPushPlaceholderInst::print (int indent) const
 
 
 SimdFileNameInst::SimdFileNameInst (const string &fileName, int lineNumber)
-    : SimdInst(lineNumber), _fileName(fileName)
+    : SimdInst(&simdExecThunk<SimdFileNameInst>, lineNumber),
+      _fileName(fileName)
 {
     // empty
 }

@@ -70,13 +70,38 @@
 #include <typeinfo>
 #include <string>
 
+//
+// C99's restrict has no standard C++ spelling.  GCC and Clang expose it as
+// __restrict__, MSVC as __restrict; anything else gets a no-op, since the
+// qualifier is strictly an optimization hint.
+//
+
+#ifndef CTL_RESTRICT
+    #if defined(_MSC_VER)
+        #define CTL_RESTRICT __restrict
+    #elif defined(__GNUC__) || defined(__clang__)
+        #define CTL_RESTRICT __restrict__
+    #else
+        #define CTL_RESTRICT
+    #endif
+#endif
+
+
 namespace Ctl {
 
 class SimdInst
 {
   public:
 
-    SimdInst (int lineNumber);
+    // Direct-dispatch thunk: avoids vtable lookup in the hot executePath loop.
+    // Each concrete subclass stores a pointer to simdExecThunk<Self> at
+    // construction time; executePath calls through it instead of the virtual
+    // execute().
+    typedef void (*ExecThunk)(const SimdInst *self,
+			      SimdBoolMask &mask,
+			      SimdXContext &xcontext);
+
+    SimdInst (ExecThunk thunk, int lineNumber);
     virtual ~SimdInst ();
 
     void		setNextInPath (const SimdInst *nextInPath);
@@ -94,9 +119,22 @@ class SimdInst
 
   private:
 
+    const ExecThunk     _execThunk;
     const int           _lineNumber;
     const SimdInst *	_nextInPath;
 };
+
+
+// Free thunk template: calls Derived::execute through a static_cast.  The
+// compiler sees a direct (non-virtual) call here, so the vtable lookup is
+// gone from the hot dispatch loop.
+template <class Derived>
+void simdExecThunk (const SimdInst *self,
+		    SimdBoolMask &mask,
+		    SimdXContext &xcontext)
+{
+    static_cast<const Derived *>(self)->Derived::execute (mask, xcontext);
+}
 
 
 
@@ -464,7 +502,7 @@ class SimdFileNameInst: public SimdInst
 
 template <class In, class Out, template <class I, class O> class Op>
 SimdUnaryOpInst<In, Out, Op>::SimdUnaryOpInst (int lineNumber)
-    : SimdInst(lineNumber)
+    : SimdInst(&simdExecThunk<SimdUnaryOpInst<In, Out, Op> >, lineNumber)
 {
     // empty
 }
@@ -476,23 +514,32 @@ SimdUnaryOpInst<In, Out, Op>::execute (SimdBoolMask &mask,
 				       SimdXContext &xcontext) const
 {
     const SimdReg &in = xcontext.stack().regSpRelative(-1);
-    SimdReg * out = new SimdReg(in.isVarying() || mask.isVarying(),
-				sizeof(Out));
+    const bool outVarying = in.isVarying() || mask.isVarying();
+    // Skip the arena ctor's memset: every branch below either full-writes
+    // every lane or explicitly zeroes the unmasked lanes itself.
+    SimdReg *out = SimdReg::createInArena (xcontext.arena(),
+					   outVarying,
+					   sizeof(Out),
+					   /*zeroInit=*/false);
 
     try
     {
-	if (in.isVarying() || mask.isVarying())
+	if (outVarying)
 	{
 	    if (!mask.isVarying() && !in.isReference())
 	    {
 		//
 		// The contents of in are contiguous in
-		// memory and mask is uniform.
+		// memory and mask is uniform.  Full-write,
+		// no zero needed.
 		//
+		// in and out come from distinct arena allocations
+		// and cannot alias; CTL_RESTRICT lets clang hoist the
+		// aliasing check and vectorize the loop on NEON/SSE.
 
-		const In *inPtr = (In *)in[0];
-		Out *outPtr = (Out *)(*out)[0];
-		Out *outEnd = outPtr + xcontext.regSize();
+		const In * CTL_RESTRICT inPtr  = (In *)in[0];
+		Out * CTL_RESTRICT       outPtr = (Out *)(*out)[0];
+		Out *                    outEnd = outPtr + xcontext.regSize();
 
 		while (outPtr < outEnd)
 		    Op<In,Out>::execute (*(inPtr++), *(outPtr++));
@@ -501,13 +548,17 @@ SimdUnaryOpInst<In, Out, Op>::execute (SimdBoolMask &mask,
 	    {
 		//
 		// Mask is not uniform or the contents of in
-		// may not be contiguous in memory.
+		// may not be contiguous in memory.  Zero
+		// unmasked lanes so later uniform-mask reads
+		// do not observe uninitialized memory.
 		//
 
 		for (int i = xcontext.regSize(); --i >= 0;)
 		    if (mask[i])
-			Op<In,Out>::execute (*(In*)(in[i]), 
+			Op<In,Out>::execute (*(In*)(in[i]),
 					     (*(Out*)(*out)[i]));
+		    else
+			*(Out *)((*out)[i]) = Out();
 	    }
 	}
 	else
@@ -517,12 +568,11 @@ SimdUnaryOpInst<In, Out, Op>::execute (SimdBoolMask &mask,
     }
     catch (...)
     {
-	delete out;
+	SimdReg::destroy (out);
 	throw;
     }
 
-    xcontext.stack().pop (1);
-    xcontext.stack().push (out, TAKE_OWNERSHIP);
+    xcontext.stack().replaceTop (1, out, TAKE_OWNERSHIP);
 }
 
 
@@ -539,7 +589,7 @@ SimdUnaryOpInst<In, Out, Op>::print (int indent) const
 template <class In1, class In2, class Out,
 	  template <class I1, class I2, class O> class Op>
 SimdBinaryOpInst<In1, In2, Out, Op>::SimdBinaryOpInst (int lineNumber)
-    : SimdInst(lineNumber)
+    : SimdInst(&simdExecThunk<SimdBinaryOpInst<In1, In2, Out, Op> >, lineNumber)
 {
     // empty
 }
@@ -554,13 +604,19 @@ SimdBinaryOpInst<In1, In2, Out, Op>::execute (SimdBoolMask &mask,
     const SimdReg &in1 = xcontext.stack().regSpRelative(-2);
     const SimdReg &in2 = xcontext.stack().regSpRelative(-1);
 
-    SimdReg * out = 
-	new SimdReg(in1.isVarying() || in2.isVarying() || mask.isVarying(),
-		    sizeof(Out));
+    const bool outVarying =
+	in1.isVarying() || in2.isVarying() || mask.isVarying();
+    // Skip the arena ctor's memset: every branch below either full-writes
+    // every lane or explicitly zeroes the unmasked lanes itself.
+    SimdReg *out = SimdReg::createInArena (
+	xcontext.arena(),
+	outVarying,
+	sizeof(Out),
+	/*zeroInit=*/false);
 
     try
     {
-	if (in1.isVarying() || in2.isVarying() || mask.isVarying())
+	if (outVarying)
 	{
 	    if (!mask.isVarying() && !in1.isReference() && !in2.isReference())
 	    {
@@ -569,11 +625,14 @@ SimdBinaryOpInst<In1, In2, Out, Op>::execute (SimdBoolMask &mask,
 		// in1 and in2 are contiguous in memory.  At least one
 		// of the input registers is varying.
 		//
+		// in1, in2 and out come from distinct arena allocations
+		// and cannot alias; CTL_RESTRICT lets clang hoist the
+		// aliasing check and vectorize the loop on NEON/SSE.
 
-		const In1 *in1Ptr = (In1 *)in1[0];
-		const In2 *in2Ptr = (In2 *)in2[0];
-		Out *outPtr = (Out *)(*out)[0];
-		Out *outEnd = outPtr + xcontext.regSize();
+		const In1 * CTL_RESTRICT in1Ptr = (In1 *)in1[0];
+		const In2 * CTL_RESTRICT in2Ptr = (In2 *)in2[0];
+		Out * CTL_RESTRICT       outPtr = (Out *)(*out)[0];
+		Out *                    outEnd = outPtr + xcontext.regSize();
 
 		if (in1.isVarying() && in2.isVarying())
 		{
@@ -602,30 +661,33 @@ SimdBinaryOpInst<In1, In2, Out, Op>::execute (SimdBoolMask &mask,
 		//
 		// Mask is varying or the contents of the input
 		// registers may not be contiguous in memory.
+		// Zero unmasked lanes so later uniform-mask reads
+		// do not observe uninitialized memory.
 		//
 
 		for (int i = xcontext.regSize(); --i >= 0;)
 		    if (mask[i])
-			Op<In1,In2,Out>::execute (*(In1*)(in1[i]), 
-						  *(In2*)(in2[i]), 
+			Op<In1,In2,Out>::execute (*(In1*)(in1[i]),
+						  *(In2*)(in2[i]),
 						  *(Out*)((*out)[i]));
+		    else
+			*(Out *)((*out)[i]) = Out();
 	    }
 	}
 	else
 	{
-	    Op<In1,In2,Out>::execute (*(In1*)(in1[0]), 
-				      *(In2*)(in2[0]), 
+	    Op<In1,In2,Out>::execute (*(In1*)(in1[0]),
+				      *(In2*)(in2[0]),
 				      *(Out*)((*out)[0]));
 	}
     }
     catch (...)
     {
-	delete out;
+	SimdReg::destroy (out);
 	throw;
     }
 
-    xcontext.stack().pop (2);
-    xcontext.stack().push (out, TAKE_OWNERSHIP);
+    xcontext.stack().replaceTop (2, out, TAKE_OWNERSHIP);
 }
 
 
@@ -643,7 +705,8 @@ SimdBinaryOpInst<In1, In2, Out, Op>::print (int indent) const
 
 template <class T>
 SimdPushLiteralInst<T>::SimdPushLiteralInst (T value, int lineNumber)
-    : SimdInst(lineNumber), _value (value)
+    : SimdInst(&simdExecThunk<SimdPushLiteralInst<T> >, lineNumber),
+      _value (value)
 {
     // empty
 }
@@ -654,7 +717,11 @@ void
 SimdPushLiteralInst<T>::execute (SimdBoolMask &mask,
 				 SimdXContext &xcontext) const
 {
-    SimdReg *out = new SimdReg(false, sizeof(T));
+    // Uniform single-element reg -- memcpy below full-writes the value.
+    SimdReg *out = SimdReg::createInArena (xcontext.arena(),
+					   /*varying=*/false,
+					   sizeof(T),
+					   /*zeroInit=*/false);
     xcontext.stack().push (out, TAKE_OWNERSHIP);
     memcpy((*out)[0],  &_value, sizeof(_value));
 }

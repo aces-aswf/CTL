@@ -87,7 +87,8 @@ SymbolInfo::SymbolInfo
     _addr (addr),
     _value (0),
     _isTypeName (isTypeName),
-    _access (access)
+    _access (access),
+    _codeGenHint (-1)
 {
     // empty
 }

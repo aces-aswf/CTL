@@ -341,9 +341,100 @@ jobs:
     - name: Build
       # Build your program with the given configuration
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
-    
+
     - name: Test
       working-directory: ${{github.workspace}}/build
-      # Execute tests defined by the CMake configuration.  
+      # Execute tests defined by the CMake configuration.
       # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
-      run: ctest -V --output-on-failure 
+      run: ctest -V --output-on-failure
+
+  test-openexr3-accelerate:
+    # Phase A coverage: Apple Accelerate vForce-backed transcendentals.
+    # APPLE-only knob; confirms the 15 vectorized paths route through
+    # vvexpf/vvlogf/etc. and pass fixture parity under the <=1 ULP
+    # contract.
+    runs-on: macos-latest
+
+    steps:
+
+    - name: install dependencies - imath
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/Imath.git &&
+        cd Imath &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - name: install dependencies - openexr v3.1
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/openexr.git &&
+        cd openexr &&
+        git checkout RB-3.1 &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCTL_USE_ACCELERATE=ON
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -V --output-on-failure
+
+  test-openexr3-sleef:
+    # Phase A+ coverage: sleef-backed transcendentals on macOS arm64.
+    # Confirms sleef builds on Apple hosts as a cross-platform
+    # alternative to Accelerate and passes fixture parity under the
+    # <=1 ULP contract.
+    runs-on: macos-latest
+
+    steps:
+
+    - name: install dependencies - imath
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/Imath.git &&
+        cd Imath &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - name: install dependencies - openexr v3.1
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/openexr.git &&
+        cd openexr &&
+        git checkout RB-3.1 &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - name: install sleef
+      run: brew install sleef
+
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCTL_USE_SLEEF=ON -DCTL_USE_ACCELERATE=OFF -DCMAKE_PREFIX_PATH=/opt/homebrew
+
+    - name: Build
+      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      run: ctest -V --output-on-failure

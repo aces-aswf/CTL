@@ -56,8 +56,63 @@
 #define CTLRENDER_TRANSFORM_INCLUDE
 
 #include <list>
+#include <string>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <CtlRcPtr.h>
+#include <CtlInterpreter.h>
+#include <CtlFunctionCall.h>
+#include <CtlType.h>
+#include <dpx.hh>
 #include "main.hh"
+
+namespace Ctl { class SimdInterpreter; class MetalInterpreter; }
+
+// Per-process cache of parsed+codegen'd CTL modules, keyed on
+// ctl_operation_t::filename.  Populated lazily by run_ctl_transform();
+// lets a multi-file batch pay module load (150-500 ms for aces_combined)
+// once per distinct CTL script instead of once per (input file x op).
+// Each CTL script gets its own SimdInterpreter so that unqualified
+// symbol lookups (e.g. newFunctionCall("main")) do not collide across
+// scripts in the same pipeline.
+struct InterpreterCache
+{
+    std::map<std::string, std::unique_ptr<Ctl::SimdInterpreter>> byFilename;
+    InterpreterCache();
+    ~InterpreterCache();
+
+    // Eagerly parse+codegen `filename` into byFilename.  Main-thread only.
+    // Call once per distinct ctl script before any parallel dispatch; after
+    // that, worker threads can read byFilename without synchronization
+    // because run_ctl_transform's find will always hit an existing entry.
+    void preWarm(const char *filename);
+};
+
+#ifdef CTL_GPU_BACKEND
+// Metal-side analogue of InterpreterCache.  Each distinct CTL file gets
+// its own MetalInterpreter so that `main` in file A doesn't collide with
+// `main` in file B at loadFile time (CTL language-level constraint: two
+// top-level symbols of the same name in one interpreter's global scope
+// raise "Name already defined in current scope").  Without this split,
+// a multi -ctl chain on ctlrender-metal fails at the second loadFile.
+//
+// Tradeoff vs single shared MetalInterpreter: we pay MSL-source compile
+// (~800 ms cold for ACES v2) once per distinct CTL file instead of once
+// per process.  In the common single -ctl case there is exactly one
+// entry and behaviour is identical to the pre-fix path.
+struct MetalInterpreterCache
+{
+    std::map<std::string, std::unique_ptr<Ctl::MetalInterpreter>> byFilename;
+    MetalInterpreterCache();
+    ~MetalInterpreterCache();
+
+    // Return the MetalInterpreter for `filename`, lazily creating it and
+    // calling loadFile() the first time.  Module name is the filename's
+    // basename without extension (matches run_ctl_transform's convention).
+    Ctl::MetalInterpreter & get(const char *filename);
+};
+#endif
 
 // structure to capture a CTL parameter.
 // A parameter consists of a name and up to 4 floating point values.
@@ -92,10 +147,95 @@ struct ctl_operation_t
 
 typedef std::list<ctl_operation_t> CTLOperations;
 
+// Holds the named data (input pixel plane or CTL-returned output) the
+// render pipeline passes between the file I/O layer and the CTL
+// interpreter. The definition lives in the header because Ctl::RcPtr
+// requires the full type for ref-count + delete; ctlrender-metal's
+// parity.cc constructs CTLResults lists directly.
+class CTLResult: public Ctl::RcObject
+{
+public:
+	CTLResult();
+	virtual ~CTLResult();
+
+	Ctl::TypeStoragePtr data;
+	bool external;
+	std::string alt_name;
+};
+typedef Ctl::RcPtr<CTLResult> CTLResultPtr;
+typedef std::list<CTLResultPtr> CTLResults;
+
+CTLResultPtr mkresult(const char *name, const char *alt_name,
+                      const ctl::dpx::fb<float> &fb, size_t offset);
+void mkimage(ctl::dpx::fb<float> *image_buffer, const CTLResults &ctl_results,
+             format_t *image_format);
+void add_parameter_value_to_ctl_results(CTLResults *ctl_results,
+                                        const ctl_parameter_t &ctl_parameter);
+void set_ctl_function_argument_from_ctl_results(Ctl::FunctionArgPtr *arg,
+                                                const CTLResults &ctl_results,
+                                                size_t offset, size_t count);
+void set_ctl_results_from_ctl_function_argument(CTLResults *ctl_results,
+                                                const Ctl::FunctionArgPtr &arg,
+                                                size_t offset, size_t count,
+                                                size_t total);
+void run_ctl_transform(Ctl::Interpreter &interpreter,
+                       const ctl_operation_t &ctl_operation,
+                       CTLResults *ctl_results, size_t count);
+
 void transform(const char *inputFile, const char *outputFile,
 		       float input_scale, float output_scale,
 		       format_t *format,
                Compression *compression,
-		       const CTLOperations &ops, const CTLParameters &global);
+		       const CTLOperations &ops, const CTLParameters &global,
+#ifdef CTL_GPU_BACKEND
+		       MetalInterpreterCache *cache = NULL);
+#else
+		       InterpreterCache *cache);
+#endif
+
+// Apply a CTL operation chain to a caller-owned, pre-populated 1xN
+// framebuffer and mutate it in place.  No file I/O.  Used by ctlrender's
+// -pixel CLI mode: the caller fills image_buffer with RGB or RGBA
+// values from the command line, we run the chain, the caller reads the
+// result back out for stdout printing.  The depth of the input fb (3 or
+// 4) is preserved; each CTL script's main signature determines which of
+// rOut/gOut/bOut/aOut are emitted.
+void transform_pixels(const CTLOperations &ops,
+                      const CTLParameters &global,
+                      ctl::dpx::fb<float> *image_buffer,
+#ifdef CTL_GPU_BACKEND
+                      MetalInterpreterCache *cache = NULL
+#else
+                      InterpreterCache *cache = NULL
+#endif
+                      );
+
+#ifdef CTL_GPU_BACKEND
+// Pipeline-split entry points for the Metal batch driver: the monolithic
+// transform() above decodes, computes, and encodes in one call.  Running a
+// directory of input images with `ctlrender-metal` serially leaves the
+// GPU idle during CPU-bound EXR decode/encode.  Splitting the three
+// phases lets main.cc run them on separate threads with bounded hand-off
+// queues, overlapping decode(N+1) || GPU(N) || encode(N-1).
+void transform_metal_decode(const char *inputFile,
+                            float input_scale,
+                            format_t *format,
+                            ctl::dpx::fb<float> *image_buffer);
+
+// The compute stage looks up the right MetalInterpreter per CTL
+// operation through the cache, so multiple -ctl files each get their
+// own interpreter and their `main`s don't collide.
+void transform_metal_compute(MetalInterpreterCache &cache,
+                             const CTLOperations &ops,
+                             const CTLParameters &global,
+                             format_t *format,
+                             ctl::dpx::fb<float> *image_buffer);
+
+void transform_metal_encode(const char *outputFile,
+                            float output_scale,
+                            format_t *format,
+                            Compression *compression,
+                            ctl::dpx::fb<float> *image_buffer);
+#endif
 
 #endif

@@ -70,6 +70,16 @@
 #include <ImathMatrix.h>
 #include <cmath>
 
+#if CTL_USE_ACCELERATE
+#include <Accelerate/Accelerate.h>
+#include <algorithm>
+#endif
+
+#if CTL_USE_SLEEF && !CTL_USE_ACCELERATE
+#include <sleef.h>
+#include <cstring>
+#endif
+
 using namespace Imath;
 using namespace std;
 
@@ -121,6 +131,303 @@ DEFINE_SIMD_FUNC_2_ARG (Dot_f3_f3, a1.dot(a2), float, V3f, V3f);
 DEFINE_SIMD_FUNC_1_ARG (Length_f3, a1.length(), float, V3f);
 
 } // namespace
+
+#if CTL_USE_ACCELERATE
+
+//
+// Per-function Accelerate vForce specializations.  Each routes the
+// 4096-lane contiguous-varying fast path through the Apple-tuned
+// batched entry point.  Non-contiguous / uniform / masked lanes still
+// go through Func::call (scalar libm).  Apple's vForce documents <=1 ULP
+// vs platform libm for these functions; opting in trades that drift for
+// substantial throughput.
+//
+// Accelerate signatures:
+//   void vvexpf (float *y, const float *x, const int *n);          // y = exp(x)
+//   void vvpowf (float *y, const float *a, const float *b,         // y = b**a
+//                const int *n);
+//   void vvatan2f (float *y, const float *a, const float *b,       // y = atan2(a,b)
+//                  const int *n);
+//
+
+#define CTL_ACC_BATCH_1(Class, vvFn)					\
+    template <>								\
+    struct SimdFuncBatch1<Class>					\
+    {									\
+	static void run1 (const float *in, float *out, int n)		\
+	{ vvFn (out, in, &n); }						\
+    };
+
+CTL_ACC_BATCH_1 (Exp,   vvexpf)
+CTL_ACC_BATCH_1 (Log,   vvlogf)
+CTL_ACC_BATCH_1 (Log10, vvlog10f)
+CTL_ACC_BATCH_1 (Sin,   vvsinf)
+CTL_ACC_BATCH_1 (Cos,   vvcosf)
+CTL_ACC_BATCH_1 (Tan,   vvtanf)
+CTL_ACC_BATCH_1 (Asin,  vvasinf)
+CTL_ACC_BATCH_1 (Acos,  vvacosf)
+CTL_ACC_BATCH_1 (Atan,  vvatanf)
+CTL_ACC_BATCH_1 (Sinh,  vvsinhf)
+CTL_ACC_BATCH_1 (Cosh,  vvcoshf)
+CTL_ACC_BATCH_1 (Tanh,  vvtanhf)
+CTL_ACC_BATCH_1 (Sqrt,  vvsqrtf)
+
+#undef CTL_ACC_BATCH_1
+
+namespace {
+
+// Per-thread scratch for splatting a uniform scalar into a contiguous
+// array, so vvpowf / vvatan2f can consume the uniform side of a vu/uv
+// call through the same batched API as vv.  Sized to MAX_REG_SIZE so
+// one splat covers any regSize().  thread_local avoids shared-buffer
+// contention across concurrent tile workers.
+thread_local float g_ctl_acc_uniform_scratch[8192];
+
+inline float *
+ctl_acc_broadcast (float v, int n)
+{
+    std::fill_n (g_ctl_acc_uniform_scratch, n, v);
+    return g_ctl_acc_uniform_scratch;
+}
+
+} // namespace
+
+// Pow: CTL's pow(a1, a2) = a1**a2 (a1 is base).
+// Accelerate's vvpowf(y, a, b, n) computes y = b**a (a is exponent).
+// Map: vvpowf(out, /*exp*/ a2, /*base*/ a1, &n).  vu/uv cases broadcast
+// the uniform side into the per-thread scratch above and route through
+// the same batched call.
+template <>
+struct SimdFuncBatch2<Pow>
+{
+    static void run2_vv (const float *a1, const float *a2, float *out, int n)
+	{ vvpowf (out, a2, a1, &n); }
+    static void run2_vu (const float *a1, const float &a2,
+			 float *out, int n)
+    {
+	float *expBcast = ctl_acc_broadcast (a2, n);
+	vvpowf (out, expBcast, a1, &n);
+    }
+    static void run2_uv (const float &a1, const float *a2,
+			 float *out, int n)
+    {
+	float *baseBcast = ctl_acc_broadcast (a1, n);
+	vvpowf (out, a2, baseBcast, &n);
+    }
+};
+
+// Atan2: CTL's atan2(a1, a2) = atan2(y=a1, x=a2).
+// Accelerate's vvatan2f(y, a, b, n) computes y[i] = atan2(a[i], b[i]).
+// Map: vvatan2f(out, /*y*/ a1, /*x*/ a2, &n).
+template <>
+struct SimdFuncBatch2<Atan2>
+{
+    static void run2_vv (const float *a1, const float *a2, float *out, int n)
+	{ vvatan2f (out, a1, a2, &n); }
+    static void run2_vu (const float *a1, const float &a2,
+			 float *out, int n)
+    {
+	float *xBcast = ctl_acc_broadcast (a2, n);
+	vvatan2f (out, a1, xBcast, &n);
+    }
+    static void run2_uv (const float &a1, const float *a2,
+			 float *out, int n)
+    {
+	float *yBcast = ctl_acc_broadcast (a1, n);
+	vvatan2f (out, yBcast, a2, &n);
+    }
+};
+
+#endif // CTL_USE_ACCELERATE
+
+
+#if CTL_USE_SLEEF && !CTL_USE_ACCELERATE
+
+//
+// Per-function sleef specializations.  Routes the 4096-lane
+// contiguous-varying fast path through sleef's 4-wide SIMD entry
+// points.  Non-contiguous / uniform / masked lanes stay on scalar
+// libm via Func::call.  sleef's _u10 contract is <=1 ULP vs platform
+// libm; _u05 on sqrt matches the same tier Accelerate's vvsqrtf sits
+// at.  Tail elements (n % 4) use the Func's scalar libm path so their
+// precision matches a CTL_USE_SLEEF=OFF build exactly.
+//
+// Arch selection is compile-time; no runtime CPUID branch in the
+// hot loop.  On x86_64 the baseline is SSE2 (guaranteed on every
+// x86_64 CPU); wider (AVX2/AVX-512) is a future expansion of the
+// macro below.  On arm64 the baseline is NEON advsimd.
+//
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+  #define CTL_SLEEF_HAVE_V4 1
+  #define CTL_SLEEF_SFX advsimd
+  typedef float32x4_t CtlSleefV4f;
+#elif defined(__x86_64__) || defined(_M_X64)
+  #define CTL_SLEEF_HAVE_V4 1
+  #define CTL_SLEEF_SFX sse2
+  typedef __m128 CtlSleefV4f;
+#else
+  #define CTL_SLEEF_HAVE_V4 0
+#endif
+
+#if CTL_SLEEF_HAVE_V4
+
+namespace {
+
+inline CtlSleefV4f ctl_sleef_load4 (const float *p)
+{
+    CtlSleefV4f v;
+    std::memcpy (&v, p, sizeof (v));
+    return v;
+}
+
+inline void ctl_sleef_store4 (float *p, CtlSleefV4f v)
+{
+    std::memcpy (p, &v, sizeof (v));
+}
+
+// In-register splat of a scalar across a 4-lane SIMD register; used
+// by the vu/uv paths of two-arg sleef ops to route the uniform side
+// through the same 4-wide entry point as vv.
+inline CtlSleefV4f ctl_sleef_splat (float s)
+{
+    float buf[4] = {s, s, s, s};
+    return ctl_sleef_load4 (buf);
+}
+
+} // namespace
+
+// Two-level paste: expands CTL_SLEEF_SFX before concatenation so the
+// resulting token is e.g. Sleef_expf4_u10advsimd (arm64) or
+// Sleef_expf4_u10sse2 (x86_64).
+#define CTL_SLEEF_CAT_(a, b) a ## b
+#define CTL_SLEEF_CAT(a, b) CTL_SLEEF_CAT_(a, b)
+#define CTL_SLEEF_FN(base, ulp) \
+    CTL_SLEEF_CAT(Sleef_ ## base ## f4_ ## ulp, CTL_SLEEF_SFX)
+
+#define CTL_SLEEF_BATCH_1(Class, base, ulp)				\
+    template <>								\
+    struct SimdFuncBatch1<Class>					\
+    {									\
+	static void run1 (const float *in, float *out, int n)		\
+	{								\
+	    int i = 0;							\
+	    for (; i + 4 <= n; i += 4)					\
+		ctl_sleef_store4 (out + i,				\
+		    CTL_SLEEF_FN (base, ulp) (			\
+			ctl_sleef_load4 (in + i)));			\
+	    for (; i < n; ++i)						\
+		out[i] = Class::call (in[i]);				\
+	}								\
+    };
+
+CTL_SLEEF_BATCH_1 (Exp,   exp,   u10)
+CTL_SLEEF_BATCH_1 (Log,   log,   u10)
+CTL_SLEEF_BATCH_1 (Log10, log10, u10)
+CTL_SLEEF_BATCH_1 (Sin,   sin,   u10)
+CTL_SLEEF_BATCH_1 (Cos,   cos,   u10)
+CTL_SLEEF_BATCH_1 (Tan,   tan,   u10)
+CTL_SLEEF_BATCH_1 (Asin,  asin,  u10)
+CTL_SLEEF_BATCH_1 (Acos,  acos,  u10)
+CTL_SLEEF_BATCH_1 (Atan,  atan,  u10)
+CTL_SLEEF_BATCH_1 (Sinh,  sinh,  u10)
+CTL_SLEEF_BATCH_1 (Cosh,  cosh,  u10)
+CTL_SLEEF_BATCH_1 (Tanh,  tanh,  u10)
+// sleef publishes sqrt at _u05 (<=0.5 ULP); no _u10 tier.  Matches
+// the Accelerate path's vvsqrtf precision.
+CTL_SLEEF_BATCH_1 (Sqrt,  sqrt,  u05)
+
+#undef CTL_SLEEF_BATCH_1
+
+// Pow: CTL pow(a1, a2) = a1**a2.
+// sleef Sleef_powf4_u10<sfx>(x, y) returns x**y, same order.
+// vu/uv cases splat the uniform side into a v4f and route through
+// the same 4-wide entry point as vv.
+template <>
+struct SimdFuncBatch2<Pow>
+{
+    static void run2_vv (const float *a1, const float *a2, float *out, int n)
+    {
+	int i = 0;
+	for (; i + 4 <= n; i += 4)
+	    ctl_sleef_store4 (out + i,
+		CTL_SLEEF_FN (pow, u10) (
+		    ctl_sleef_load4 (a1 + i),
+		    ctl_sleef_load4 (a2 + i)));
+	for (; i < n; ++i)
+	    out[i] = Pow::call (a1[i], a2[i]);
+    }
+    static void run2_vu (const float *a1, const float &a2,
+			 float *out, int n)
+    {
+	const CtlSleefV4f s = ctl_sleef_splat (a2);
+	int i = 0;
+	for (; i + 4 <= n; i += 4)
+	    ctl_sleef_store4 (out + i,
+		CTL_SLEEF_FN (pow, u10) (ctl_sleef_load4 (a1 + i), s));
+	for (; i < n; ++i)
+	    out[i] = Pow::call (a1[i], a2);
+    }
+    static void run2_uv (const float &a1, const float *a2,
+			 float *out, int n)
+    {
+	const CtlSleefV4f s = ctl_sleef_splat (a1);
+	int i = 0;
+	for (; i + 4 <= n; i += 4)
+	    ctl_sleef_store4 (out + i,
+		CTL_SLEEF_FN (pow, u10) (s, ctl_sleef_load4 (a2 + i)));
+	for (; i < n; ++i)
+	    out[i] = Pow::call (a1, a2[i]);
+    }
+};
+
+// Atan2: CTL atan2(a1, a2) = atan2(y=a1, x=a2).
+// sleef Sleef_atan2f4_u10<sfx>(y, x) returns atan2(y, x), same order.
+template <>
+struct SimdFuncBatch2<Atan2>
+{
+    static void run2_vv (const float *a1, const float *a2, float *out, int n)
+    {
+	int i = 0;
+	for (; i + 4 <= n; i += 4)
+	    ctl_sleef_store4 (out + i,
+		CTL_SLEEF_FN (atan2, u10) (
+		    ctl_sleef_load4 (a1 + i),
+		    ctl_sleef_load4 (a2 + i)));
+	for (; i < n; ++i)
+	    out[i] = Atan2::call (a1[i], a2[i]);
+    }
+    static void run2_vu (const float *a1, const float &a2,
+			 float *out, int n)
+    {
+	const CtlSleefV4f s = ctl_sleef_splat (a2);
+	int i = 0;
+	for (; i + 4 <= n; i += 4)
+	    ctl_sleef_store4 (out + i,
+		CTL_SLEEF_FN (atan2, u10) (ctl_sleef_load4 (a1 + i), s));
+	for (; i < n; ++i)
+	    out[i] = Atan2::call (a1[i], a2);
+    }
+    static void run2_uv (const float &a1, const float *a2,
+			 float *out, int n)
+    {
+	const CtlSleefV4f s = ctl_sleef_splat (a1);
+	int i = 0;
+	for (; i + 4 <= n; i += 4)
+	    ctl_sleef_store4 (out + i,
+		CTL_SLEEF_FN (atan2, u10) (s, ctl_sleef_load4 (a2 + i)));
+	for (; i < n; ++i)
+	    out[i] = Atan2::call (a1, a2[i]);
+    }
+};
+
+#undef CTL_SLEEF_FN
+#undef CTL_SLEEF_CAT
+#undef CTL_SLEEF_CAT_
+
+#endif // CTL_SLEEF_HAVE_V4
+
+#endif // CTL_USE_SLEEF && !CTL_USE_ACCELERATE
 
 
 void

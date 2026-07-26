@@ -1,0 +1,11 @@
+///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the CTL project.
+// SPDX-License-Identifier: BSD-3-Clause
+///////////////////////////////////////////////////////////////////////////
+
+#ifndef INCLUDED_TEST_INLINE_HELPERS_H
+#define INCLUDED_TEST_INLINE_HELPERS_H
+
+void testInlineHelpers();
+
+#endif

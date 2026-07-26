@@ -1,0 +1,11 @@
+///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the CTL project.
+// SPDX-License-Identifier: BSD-3-Clause
+///////////////////////////////////////////////////////////////////////////
+
+#ifndef INCLUDED_TEST_SIMD_REG_OWNERSHIP_H
+#define INCLUDED_TEST_SIMD_REG_OWNERSHIP_H
+
+void testSimdRegOwnership();
+
+#endif

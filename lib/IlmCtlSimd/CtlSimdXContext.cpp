@@ -104,7 +104,7 @@ SimdStack::push (SimdReg *reg, RegOwnership ownership)
     if (_sp > _size)
     {
 	if (ownership == TAKE_OWNERSHIP)
-	    delete reg;
+	    SimdReg::destroy (reg);
 
 	throw StackOverflowExc ("Stack overflow.");
     }
@@ -130,9 +130,54 @@ SimdStack::pop (int n, bool giveUpOwnership /* = false */)
 	--_sp;
 
 	if (_regPointers[_sp].owner && !giveUpOwnership)
-	    delete _regPointers[_sp].reg;
-	
+	{
+	    SimdReg *reg = _regPointers[_sp].reg;
+	    if (reg->isArenaOwned())
+		reg->~SimdReg();
+	    else
+		delete reg;
+	}
     }
+}
+
+
+void
+SimdStack::replaceTop (int n, SimdReg *reg, RegOwnership ownership)
+{
+    if (n > _sp)
+    {
+	if (ownership == TAKE_OWNERSHIP)
+	    SimdReg::destroy (reg);
+	throw StackUnderflowExc ("Stack underflow.");
+    }
+
+    if (n < 1)
+    {
+	if (ownership == TAKE_OWNERSHIP)
+	    SimdReg::destroy (reg);
+	throw StackLogicExc ("replaceTop requires n >= 1.");
+    }
+
+    // Destroy the top n owned regs, leaving _sp at the slot the new reg
+    // will occupy.  Unrolled by hand (most callers pass n=1 or n=2).
+    while (n > 0)
+    {
+	--n;
+	--_sp;
+
+	if (_regPointers[_sp].owner)
+	{
+	    SimdReg *r = _regPointers[_sp].reg;
+	    if (r->isArenaOwned())
+		r->~SimdReg();
+	    else
+		delete r;
+	}
+    }
+
+    _regPointers[_sp].reg   = reg;
+    _regPointers[_sp].owner = (ownership == TAKE_OWNERSHIP);
+    ++_sp;
 }
 
 
@@ -186,6 +231,7 @@ SimdStack::ownerFpRelative (int offset) const
 SimdXContext::SimdXContext (SimdInterpreter &interpreter):
     _interpreter (interpreter),
     _stack (1000),
+    _arena (),
     _regSize (0),
     _returnMask (new SimdBoolMask(false)),
     _lineNumber (0),
@@ -230,25 +276,34 @@ SimdXContext::run (int regSize, const SimdInst *entryPoint)
     _maxInstCount = _interpreter.maxInstCount();
     _instCount = 0;
 
-    entryPoint->executePath (mask, *this);
+    // Per-callFunction arena lifetime: all arena-backed SimdRegs that
+    // executePath allocates are popped (and thus destructed) before
+    // executePath returns, either normally or via exception unwind.
+    // Reset the bump tip here so the next run() reuses the same chunks.
+    try
+    {
+	entryPoint->executePath (mask, *this);
+    }
+    catch (...)
+    {
+	_arena.reset();
+	throw;
+    }
+    _arena.reset();
 }
 
 
-void	
-SimdXContext::countInstruction ()
+void
+SimdXContext::countInstructionSlow ()
 {
-    if ((++_instCount & 0x01fff) == 0)
-    {
-	if (_maxInstCount && _instCount > _maxInstCount)
+    if (_maxInstCount && _instCount > _maxInstCount)
       THROW(Ctl::MaxInstExc, "\nException Ctl::MaxInstExc thrown\n" <<
         "Maximum CTL instruction count _maxInstCount=" << _maxInstCount <<
         " exceeded, _instCount=" << _instCount << "\n" <<
         "Try increasing SimdInterpreter::Data->maxInstCount\n");
-//	    throw Ctl::MaxInstExc ("Maximum CTL instruction count exceeded.");
 
-	if (_abortCount != _interpreter.abortCount())
-	    throw Ctl::AbortExc ("CTL program aborted.");
-    }
+    if (_abortCount != _interpreter.abortCount())
+	throw Ctl::AbortExc ("CTL program aborted.");
 }
 
 

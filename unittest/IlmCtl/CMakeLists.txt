@@ -1,11 +1,20 @@
 set(SOURCES
 	main.cpp
+	testConcurrentCalls.cpp
 	testCppCall.cpp
+	testEdgeValues.cpp
 	testEndOfLine.cpp
 	testExamples.cpp
+	testExc.cpp
 	testHugeInit.cpp
+	testInlineHelpers.cpp
+	testHelperRecognition.cpp
 	testParser.cpp
+	testSimdRegAddr.cpp
+	testSimdRegOwnership.cpp
+	testUniformBoolDefault.cpp
 	testVarying.cpp
+	testVaryingArrayIndex.cpp
 	testVaryingLookup.cpp
 	testVaryingReturn.cpp
 )
@@ -39,6 +48,9 @@ file(COPY
 	common.ctl
 	example.ctl
 	testArray.ctl
+	testInlineHelpers.ctl
+	testHelperRecognition.ctl
+	testHelperRecognitionCanon.ctl
 	testCast.ctl
 	testComments.ctl
 	testCppCall.ctl
@@ -51,6 +63,8 @@ file(COPY
 	testExpr.ctl
 	testFunc.ctl
 	testHugeInit.ctl
+	testConcurrentCalls.ctl
+	testEdgeValues.ctl
 	testInterpolator.ctl
 	testLiterals.ctl
 	testLookupTables.ctl
@@ -63,10 +77,12 @@ file(COPY
 	testParse.ctl
 	testScope2.ctl
 	testScope.ctl
+	testUniformBoolDefault.ctl
 	testStdLibrary.ctl
 	testStruct.ctl
 	testTypes.ctl
 	testVarying.ctl
+	testVaryingArrayIndex.ctl
 	testVaryingLookup.ctl
 	testVaryingReturn.ctl
 	testVSArrays.ctl

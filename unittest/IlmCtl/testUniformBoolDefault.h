@@ -1,0 +1,11 @@
+///////////////////////////////////////////////////////////////////////////
+// Copyright Contributors to the CTL project.
+// SPDX-License-Identifier: BSD-3-Clause
+///////////////////////////////////////////////////////////////////////////
+
+#ifndef INCLUDED_TEST_UNIFORM_BOOL_DEFAULT_H
+#define INCLUDED_TEST_UNIFORM_BOOL_DEFAULT_H
+
+void testUniformBoolDefault();
+
+#endif
