@@ -112,7 +112,15 @@ void Type::childElementV(size_t *offset, TypePtr *type, const std::string path,
 	segment=remainder;
 	start=remainder.find_first_of("/");
 	if(start!=(std::string::size_type)-1) {
-		segment=std::string(remainder.begin(), remainder.begin()+start-1);
+		// 'start' is the index of the '/' separator. The segment is the
+		// substring up to (but not including) that index; the remainder
+		// is everything from the '/' onward. The leading '/' in the
+		// remainder is consumed by the find_first_not_of("/") branch on
+		// the recursive call above. A prior version of this line used
+		// begin()+start-1 which truncated every multi-segment path by
+		// one character, silently collapsing nested lookups to a single
+		// level and landing at offset 0 inside the wrong subtype.
+		segment=std::string(remainder.begin(), remainder.begin()+start);
 		remainder=std::string(remainder.begin()+start, remainder.end());
 	} else {
 		remainder="";
@@ -168,7 +176,7 @@ void Type::childElementV(size_t *offset, TypePtr *type, const std::string path,
 		count=struct_type->members().size();
 		for(u=0; u<count; u++) {
 			if(struct_type->members()[u].name==segment) {
-				*offset=*offset+u*struct_type->objectSize();
+				*offset=*offset+struct_type->members()[u].offset;
 				*type=struct_type->members()[u].type;
 				childElementV(offset, type, remainder, ap);
 				return;
