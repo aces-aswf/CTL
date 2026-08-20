@@ -1,0 +1,29 @@
+version: 1
+suite: escape_hatch_example
+#
+# YAML declares which CTL-native test functions the runner should invoke.
+# The assertions live in test_mymodule.ctl; this file just selects them.
+#
+
+modules:
+  - test_mymodule             # the file whose basename starts with test_
+  - mymodule                  # the module under test
+
+module_paths:
+  - .
+
+tests:
+  - id: identity_is_identity
+    description: Smoke test -- identity returns its input.
+    mode: ctl_native
+    function: test_mymodule::test_identity_is_identity
+
+  - id: scale_is_linear_in_k
+    description: Property check -- mymodule::scale is linear in k over a sweep.
+    mode: ctl_native
+    function: test_mymodule::test_scale_is_linear_in_k
+
+  - id: tonescale_midpoint_in_range
+    description: Asserts on intermediate values inside a multi-stage pipeline.
+    mode: ctl_native
+    function: test_mymodule::test_tonescale_midpoint_in_range

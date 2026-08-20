@@ -1,0 +1,11 @@
+# ctltest manifest - one YAML suite path per line (relative to moduletest/).
+# Empty lines and lines starting with '#' are ignored.
+#
+# Adding a test: append a line here and commit. The next CMake configure
+# picks it up and registers it with ctest automatically.
+
+tests/selftest/scalar_roundtrip.yaml
+tests/selftest/sweep_csv.yaml
+tests/selftest/image_conformance.yaml
+tests/selftest/snapshot.yaml
+tests/selftest/ctl_native.yaml

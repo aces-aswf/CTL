@@ -1,0 +1,100 @@
+name: moduletest
+
+permissions:
+  contents: read
+
+on:
+  push:
+    paths-ignore:
+      - 'README.md'
+      - 'doc/**'
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'doc/**'
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+
+  ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: apt dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install libtiff-dev zlib1g-dev
+
+      - name: build Imath
+        run: |
+          git clone --depth 1 https://github.com/AcademySoftwareFoundation/Imath.git ../Imath
+          cmake -S ../Imath -B ../Imath/build -DBUILD_TESTING=OFF
+          cmake --build ../Imath/build -j
+          sudo cmake --install ../Imath/build
+
+      - name: build OpenEXR 3.1
+        run: |
+          git clone --depth 1 --branch RB-3.1 https://github.com/AcademySoftwareFoundation/openexr.git ../openexr
+          cmake -S ../openexr -B ../openexr/build \
+            -DBUILD_TESTING=OFF -DOPENEXR_BUILD_TOOLS=OFF -DOPENEXR_INSTALL_EXAMPLES=OFF
+          cmake --build ../openexr/build -j
+          sudo cmake --install ../openexr/build
+
+      - name: configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCTL_BUILD_MODULETEST=ON
+
+      - name: build
+        run: cmake --build build -j --config ${{ env.BUILD_TYPE }}
+
+      - name: ctest (ctltest label)
+        working-directory: build
+        run: ctest -L ctltest --output-on-failure
+
+      - name: ctltest CLI -- JUnit
+        run: |
+          ./build/moduletest/cli/ctltest \
+            --reporter junit \
+            --output ctltest-junit.xml \
+            moduletest/tests/selftest/
+
+      - name: upload JUnit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctltest-junit-ubuntu
+          path: ctltest-junit.xml
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: brew dependencies
+        run: brew install openexr imath yaml-cpp
+
+      - name: configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCTL_BUILD_MODULETEST=ON
+
+      - name: build
+        run: cmake --build build -j --config ${{ env.BUILD_TYPE }}
+
+      - name: ctest (ctltest label)
+        working-directory: build
+        run: ctest -L ctltest --output-on-failure
+
+      - name: ctltest CLI -- JUnit
+        run: |
+          ./build/moduletest/cli/ctltest \
+            --reporter junit \
+            --output ctltest-junit.xml \
+            moduletest/tests/selftest/
+
+      - name: upload JUnit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctltest-junit-macos
+          path: ctltest-junit.xml

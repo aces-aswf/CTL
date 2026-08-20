@@ -1,0 +1,199 @@
+version: 1
+suite: ctltest-selftest-scalar-roundtrip
+
+modules:
+  - st_scalar
+
+module_paths:
+  - ../fixtures
+
+defaults:
+  tolerance:
+    abs: 1.0e-6
+
+tests:
+  - id: identity_float
+    description: Identity returns its argument unchanged.
+    function: st_scalar::identity_f
+    inputs:
+      x: 0.25
+    oracle:
+      inline:
+        return: 0.25
+
+  - id: add_float
+    description: Add two floats.
+    function: st_scalar::add_f
+    inputs:
+      a: 0.1
+      b: 0.2
+    tolerance:
+      abs: 1.0e-6
+    oracle:
+      inline:
+        return: 0.3
+
+  - id: add_int
+    description: Integer add is exact.
+    function: st_scalar::add_i
+    inputs:
+      a: 3
+      b: 4
+    oracle:
+      inline:
+        return: 7
+
+  - id: bool_and
+    description: Boolean and.
+    function: st_scalar::both
+    inputs:
+      a: true
+      b: false
+    oracle:
+      inline:
+        return: false
+
+  - id: default_arg_applied
+    description: Omitted 'k' falls back to its default 2.0.
+    function: st_scalar::with_default
+    inputs:
+      x: 1.5
+    oracle:
+      inline:
+        return: 3.0
+
+  - id: square_vec3
+    description: Element-wise square, via an output array.
+    function: st_scalar::square_v3
+    inputs:
+      v: [0.5, 1.0, 2.0]
+    oracle:
+      inline:
+        out: [0.25, 1.0, 4.0]
+
+  - id: make_point_struct
+    description: Return a struct literal.
+    function: st_scalar::make_point
+    inputs:
+      x: 3.0
+      y: 4.0
+    oracle:
+      inline:
+        return:
+          x: 3.0
+          y: 4.0
+
+  - id: struct_in
+    description: Consume a struct and return a scalar.
+    function: st_scalar::point_dist2
+    inputs:
+      p:
+        x: 3.0
+        y: 4.0
+    tolerance:
+      abs: 1.0e-5
+    oracle:
+      inline:
+        return: 25.0
+
+  - id: half_rounds_to_nearest_even
+    description: |
+      Expected authored as 0.1 (not exactly representable in half) compared
+      against CTL `half` output. With the suite's tight abs:1e-6 the compare
+      only passes because the oracle rounds the authored value to the same
+      nearest-even half before diffing.
+    function: st_scalar::to_half
+    inputs:
+      x: 0.1
+    oracle:
+      inline:
+        return: 0.1
+
+  - id: half_exact_representable
+    description: 0.5 is exactly representable in half; authored expected matches bit-for-bit.
+    function: st_scalar::to_half
+    inputs:
+      x: 0.5
+    oracle:
+      inline:
+        return: 0.5
+
+  - id: transpose_3x3_matrix
+    description: |
+      Nested fixed-array table path: float[3][3] in, float[3][3] out.
+      Requires Marshal to walk arrays-of-arrays with "/" paths and the
+      v1.1 CtlType path-parser fix.
+    function: st_scalar::transpose3x3
+    inputs:
+      m:
+        - [1.0, 2.0, 3.0]
+        - [4.0, 5.0, 6.0]
+        - [7.0, 8.0, 9.0]
+    oracle:
+      inline:
+        out:
+          - [1.0, 4.0, 7.0]
+          - [2.0, 5.0, 8.0]
+          - [3.0, 6.0, 9.0]
+
+  - id: struct_with_array_member
+    description: |
+      Struct containing an array member (Tri { float v[3]; int n; }).
+      Return round-trips through struct/array/scalar paths.
+    function: st_scalar::make_tri
+    inputs:
+      a: 1.0
+      b: 2.0
+      c: 3.0
+      n: 7
+    oracle:
+      inline:
+        return:
+          v: [1.0, 2.0, 3.0]
+          n: 7
+
+  - id: struct_with_array_member_consumed
+    description: |
+      Consume a struct containing an array member. Exercises the input-side
+      struct to array to scalar bind.
+    function: st_scalar::tri_sum
+    inputs:
+      t:
+        v: [10.0, 20.0, 30.0]
+        n: 99
+    tolerance:
+      abs: 1.0e-5
+    oracle:
+      inline:
+        return: 60.0
+
+  - id: array_of_struct
+    description: |
+      Fixed array of struct (Point[4]). Exercises array to struct ->
+      scalar marshaling on the input side.
+    function: st_scalar::quad_sum_x
+    inputs:
+      q:
+        - { x: 1.0, y: 0.0 }
+        - { x: 2.0, y: 0.0 }
+        - { x: 3.0, y: 0.0 }
+        - { x: 4.0, y: 0.0 }
+    tolerance:
+      abs: 1.0e-5
+    oracle:
+      inline:
+        return: 10.0
+
+  - id: lut8_sum
+    description: |
+      Fixed-size 1D LUT summed element-wise; lut[8] is authored inline
+      (below the inline-table threshold). Validates array-of-scalar
+      marshaling at sub-threshold size.
+    function: st_scalar::lut_sum8
+    inputs:
+      lut: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    tolerance:
+      abs: 1.0e-6
+    oracle:
+      inline:
+        return: 2.8

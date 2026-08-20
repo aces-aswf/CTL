@@ -1,0 +1,4 @@
+# ctltest snapshot -- edit with care; regenerate with CTL_TEST_UPDATE_SNAPSHOTS=1
+return:
+  x: "3"
+  y: "4"

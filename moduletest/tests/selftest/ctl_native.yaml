@@ -1,0 +1,19 @@
+version: 1
+suite: ctltest-selftest-ctl-native
+
+modules:
+  - test_lib
+
+module_paths:
+  - ../fixtures
+
+tests:
+  - id: roundtrip_passes
+    description: Calls testkit::expect_near_f / expect_true on known-good values.
+    mode: ctl_native
+    function: test_lib::test_roundtrip_passes
+
+  - id: loop_sum
+    description: Loops accumulate before a single expect_near_f call.
+    mode: ctl_native
+    function: test_lib::test_loop_sum
