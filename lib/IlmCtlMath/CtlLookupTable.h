@@ -57,8 +57,8 @@
 
 //-----------------------------------------------------------------------------
 //
-//	1D and 3D table lookups with linear, trilinear and
-//	cubic interpolation.
+//	1D and 3D table lookups with linear, trilinear, tetrahedral
+//	and cubic interpolation.
 //
 //	lookup1D(t,s,pMin,pMax,p)
 //
@@ -86,6 +86,17 @@
 //		is not known at compile time, lookup table t is passed
 //		to lookup3D as a 1D array, with table entry t[i][j][k]
 //		at location t[(i * s.y + j) * s.z + k];
+//
+//	lookup3DTetra(t,s,pMin,pMax,p)
+//
+//		Like lookup3D(t,s,pMin,pMax,p), except with tetrahedral
+//		rather than trilinear interpolation between the table
+//		entries:  each cell of the table is split into six
+//		tetrahedra around its main diagonal, and f interpolates
+//		between the four corners of the tetrahedron that
+//		contains pClamp.  Along the main diagonal of a cell,
+//		f is a linear blend of only the two diagonal corner
+//		entries.
 //
 //	interpolate1D(t,s,p)
 //
@@ -126,6 +137,12 @@ Imath::V3f	lookup3D (const Imath::V3f table[],
 			  const Imath::V3f &pMin,
 			  const Imath::V3f &pMax,
 			  const Imath::V3f &p);
+
+Imath::V3f	lookup3DTetra (const Imath::V3f table[],
+			       const Imath::V3i &size,
+			       const Imath::V3f &pMin,
+			       const Imath::V3f &pMax,
+			       const Imath::V3f &p);
 
 float		interpolate1D (const float table[][2],
 			       int size,

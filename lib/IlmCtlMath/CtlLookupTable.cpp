@@ -54,7 +54,8 @@
 
 //-----------------------------------------------------------------------------
 //
-//	1D and 3D table lookups with linear and trilinear interpolation.
+//	1D and 3D table lookups with linear, trilinear and tetrahedral
+//	interpolation.
 //
 //-----------------------------------------------------------------------------
 
@@ -235,7 +236,82 @@ lookup3D
 }
 
 
-float	
+V3f
+lookup3DTetra
+    (const V3f table[],
+     const V3i &size,
+     const V3f &pMin,
+     const V3f &pMax,
+     const V3f &p)
+{
+    int iMax = size.x - 1;
+    float r = (clamp (p.x, pMin.x, pMax.x) - pMin.x) / (pMax.x - pMin.x) * iMax;
+
+    int i, i1;
+    float u, u1;
+    indicesAndWeights (r, iMax, i, i1, u, u1);
+
+    int jMax = size.y - 1;
+    float s = (clamp (p.y, pMin.y, pMax.y) - pMin.y) / (pMax.y - pMin.y) * jMax;
+
+    int j, j1;
+    float v, v1;
+    indicesAndWeights (s, jMax, j, j1, v, v1);
+
+    int kMax = size.z - 1;
+    float t = (clamp (p.z, pMin.z, pMax.z) - pMin.z) / (pMax.z - pMin.z) * kMax;
+
+    int k, k1;
+    float w, w1;
+    indicesAndWeights (t, kMax, k, k1, w, w1);
+
+    const V3f &c000 = table[(i  * size.y + j ) * size.z + k ];
+    const V3f &c100 = table[(i1 * size.y + j ) * size.z + k ];
+    const V3f &c010 = table[(i  * size.y + j1) * size.z + k ];
+    const V3f &c110 = table[(i1 * size.y + j1) * size.z + k ];
+    const V3f &c001 = table[(i  * size.y + j ) * size.z + k1];
+    const V3f &c101 = table[(i1 * size.y + j ) * size.z + k1];
+    const V3f &c011 = table[(i  * size.y + j1) * size.z + k1];
+    const V3f &c111 = table[(i1 * size.y + j1) * size.z + k1];
+
+    //
+    // Sort the fractional coordinates, (u, v, w), and interpolate
+    // between the four corners of the tetrahedron that contains them:
+    // c000, c111, and the two corners reached from c000 by first
+    // stepping along the axis with the largest fraction and then
+    // along the axis with the second-largest fraction.  With the
+    // fractions sorted into hi >= mid >= lo, the corner weights are
+    // (1 - hi), (hi - mid), (mid - lo) and lo.
+    //
+
+    if (u > v)
+    {
+	if (v > w)
+	    return (1 - u) * c000 + (u - v) * c100 +
+		   (v - w) * c110 + w * c111;
+	else if (u > w)
+	    return (1 - u) * c000 + (u - w) * c100 +
+		   (w - v) * c101 + v * c111;
+	else
+	    return (1 - w) * c000 + (w - u) * c001 +
+		   (u - v) * c101 + v * c111;
+    }
+    else
+    {
+	if (w > v)
+	    return (1 - w) * c000 + (w - v) * c001 +
+		   (v - u) * c011 + u * c111;
+	else if (w > u)
+	    return (1 - v) * c000 + (v - w) * c010 +
+		   (w - u) * c011 + u * c111;
+	else
+	    return (1 - v) * c000 + (v - u) * c010 +
+		   (u - w) * c110 + w * c111;
+    }
+}
+
+
+float
 interpolate1D
     (const float table[][2],
      int size,
