@@ -1,0 +1,187 @@
+name: Ubuntu-UndefinedBehaviorSanitizer
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  push:
+    paths-ignore:
+      - 'README.md'
+      - 'doc/**'
+  pull_request:
+    paths-ignore:
+      - 'README.md'
+      - 'doc/**'
+
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: ubsan
+  # Abort so CTest WILL_FAIL tests cannot mistake sanitizer errors for expected failures.
+  UBSAN_OPTIONS: "abort_on_error=1:print_stacktrace=1"
+
+jobs:
+  openexr2:
+    name: OpenEXR 2 (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: GCC
+            cc: gcc
+            cxx: g++
+            package: g++
+          - compiler: Clang
+            cc: clang
+            cxx: clang++
+            package: clang
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+
+    - name: run apt-get update
+      run: sudo apt-get -y update
+
+    - name: install ${{ matrix.compiler }}
+      run: sudo apt-get -y install ${{ matrix.package }}
+
+    - name: remove openexr
+      run: sudo apt-get --purge remove libopenexr-dev -y
+
+    - name: install dependencies - openexr/ilmbase v2.5
+      run:  |
+        cd ..
+        sudo apt-get -y install zlib1g-dev &&
+        git clone https://github.com/AcademySoftwareFoundation/openexr.git &&
+        cd openexr &&
+        git checkout RB-2.5 &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - name: install libtiff
+      run: sudo apt-get install libtiff-dev -y
+
+    - name: install aces_container
+      run: |
+        cd ..
+        git clone https://github.com/ampas/aces_container.git &&
+        cmake -S aces_container -B aces_container/build -DCMAKE_CXX_FLAGS="-Wno-c++11-narrowing" &&
+        cmake --build aces_container/build  &&
+        sudo cmake --install aces_container/build
+
+    - name: install pkg-config to help find aces_container
+      run: |
+        sudo apt-get -y install pkg-config
+
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
+      # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+
+    - name: Build
+      # Build your program with the given configuration
+      run: |
+        cd ${{ github.workspace }}
+        cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      # Execute tests defined by the CMake configuration.
+      # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
+      run: ctest -V --output-on-failure -C ${{env.BUILD_TYPE}}
+
+  openexr3:
+    name: OpenEXR 3 (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: GCC
+            cc: gcc
+            cxx: g++
+            package: g++
+          - compiler: Clang
+            cc: clang
+            cxx: clang++
+            package: clang
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+
+    - name: run apt-get update
+      run: sudo apt-get -y update
+
+    - name: install ${{ matrix.compiler }}
+      run: sudo apt-get -y install ${{ matrix.package }}
+
+    - name: remove openexr
+      run: sudo apt-get --purge remove libopenexr-dev -y
+
+    - name: install dependencies - imath
+      run:  |
+        cd ..
+        git clone https://github.com/AcademySoftwareFoundation/Imath.git &&
+        cd Imath &&
+        mkdir build &&
+        cd build &&
+        cmake .. &&
+        make &&
+        sudo make install
+
+    - name: install dependencies - openexr v3.1
+      run:  |
+        cd ..
+        sudo apt-get -y install zlib1g-dev &&
+        git clone https://github.com/AcademySoftwareFoundation/openexr.git &&
+        cd openexr &&
+        git checkout RB-3.1 &&
+        mkdir build &&
+        cd build &&
+        cmake .. -DBUILD_TESTING=OFF -DOPENEXR_BUILD_TOOLS=OFF -DOPENEXR_INSTALL_EXAMPLES=OFF &&
+        make &&
+        sudo make install
+
+    - name: install libtiff
+      run: sudo apt-get install libtiff-dev -y
+
+    - name: install aces_container
+      run: |
+        cd ..
+        git clone https://github.com/ampas/aces_container.git &&
+        cmake -S aces_container -B aces_container/build -DCMAKE_CXX_FLAGS="-Wno-c++11-narrowing" &&
+        cmake --build aces_container/build  &&
+        sudo cmake --install aces_container/build
+
+    - name: install pkg-config to help find aces_container
+      run: |
+        sudo apt-get -y install pkg-config
+
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
+      # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+
+    - name: Build
+      # Build your program with the given configuration
+      run: |
+        cd ${{ github.workspace }}
+        cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+
+    - name: Test
+      working-directory: ${{github.workspace}}/build
+      # Execute tests defined by the CMake configuration.
+      # See https://cmake.org/cmake/help/latest/manual/ctest.1.html for more detail
+      run: ctest -V --output-on-failure -C ${{env.BUILD_TYPE}}

@@ -22,17 +22,26 @@ set(CMAKE_CXX_FLAGS_ASAN
   CACHE STRING "Flags used by the C++ compiler during AddressSanitizer builds."
   FORCE)
 
+set(CMAKE_CXX_FLAGS_UBSAN
+  "-fsanitize=undefined -fno-sanitize-recover=all -fno-optimize-sibling-calls -fno-omit-frame-pointer -g -O1"
+  CACHE STRING "Flags used by the C++ compiler during UndefinedBehaviorSanitizer builds."
+  FORCE)
+
 if( NOT DEFINED CMAKE_BUILD_TYPE )
   MESSAGE( STATUS "To use Release mode, use \"cmake .. -DCMAKE_BUILD_TYPE=Release\"" )
   MESSAGE( STATUS "To use AddressSanitizer, use \"cmake .. -DCMAKE_BUILD_TYPE=asan\"" )
+  MESSAGE( STATUS "To use UndefinedBehaviorSanitizer, use \"cmake .. -DCMAKE_BUILD_TYPE=ubsan\"" )
 elseif( CMAKE_BUILD_TYPE STREQUAL "Release" )
   MESSAGE( STATUS "Using Release mode - CMAKE_BUILD_TYPE : \"${CMAKE_BUILD_TYPE}\"")
 elseif( CMAKE_BUILD_TYPE STREQUAL "asan" )
   MESSAGE( STATUS "Using AddressSanitizer - CMAKE_BUILD_TYPE : \"${CMAKE_BUILD_TYPE}\"")
+elseif( CMAKE_BUILD_TYPE STREQUAL "ubsan" )
+  MESSAGE( STATUS "Using UndefinedBehaviorSanitizer - CMAKE_BUILD_TYPE : \"${CMAKE_BUILD_TYPE}\"")
 else()
   MESSAGE( STATUS "CMAKE_BUILD_TYPE : \"${CMAKE_BUILD_TYPE}\"")
   MESSAGE( STATUS "To use Release mode, use \"cmake .. -DCMAKE_BUILD_TYPE=Release\"" )
   MESSAGE( STATUS "To use AddressSanitizer, use \"cmake .. -DCMAKE_BUILD_TYPE=asan\"" )
+  MESSAGE( STATUS "To use UndefinedBehaviorSanitizer, use \"cmake .. -DCMAKE_BUILD_TYPE=ubsan\"" )
 endif()
 
 # Set a default build type if none was specified
