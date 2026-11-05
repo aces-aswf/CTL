@@ -617,8 +617,9 @@ IntType::evaluate (LContext &lcontext, const ExprNodePtr &expr) const
 			    (expr->lineNumber, x->value <= y->value);
 
 	      case TK_MINUS:
+		// Use unsigned arithmetic to wrap the result without signed overflow.
 		return lcontext.newIntLiteralNode
-			    (expr->lineNumber, x->value - y->value);
+			    (expr->lineNumber, int (unsigned (x->value) - unsigned (y->value)));
 
 	      case TK_MOD:
 		return lcontext.newIntLiteralNode
