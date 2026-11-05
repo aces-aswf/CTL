@@ -1,0 +1,45 @@
+version: 1
+suite: ctltest-selftest-snapshot
+
+modules:
+  - st_scalar
+
+module_paths:
+  - ../fixtures
+
+defaults:
+  tolerance:
+    abs: 1.0e-6
+
+tests:
+  - id: snapshot_scalar
+    description: Snapshot-match a scalar return.
+    function: st_scalar::add_f
+    inputs:
+      a: 0.25
+      b: 0.5
+    oracle:
+      snapshot:
+        path: snapshots/snapshot_scalar.yaml
+        writable: true
+
+  - id: snapshot_array
+    description: Snapshot-match an output array.
+    function: st_scalar::square_v3
+    inputs:
+      v: [0.5, 1.0, 2.0]
+    oracle:
+      snapshot:
+        path: snapshots/snapshot_array.yaml
+        writable: true
+
+  - id: snapshot_struct
+    description: Snapshot-match a struct return.
+    function: st_scalar::make_point
+    inputs:
+      x: 3.0
+      y: 4.0
+    oracle:
+      snapshot:
+        path: snapshots/snapshot_struct.yaml
+        writable: true

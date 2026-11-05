@@ -1,0 +1,118 @@
+version: 1
+suite: aces_output_transform
+#
+# Sketch of what a real-world Output Transform author might write against
+# their CTL module. Module names here are illustrative; swap them for your
+# actual namespace::function pairs. No module files are shipped for this
+# example -- it's meant to be copy-adapted into a concrete project.
+#
+# The shape to note:
+#   - suite-level `defaults.tolerance` is your safety net
+#   - per-test `tolerance:` sharpens
+#   - per_field narrows further on dotted paths
+#   - image mode *requires* `ulp_precision` whenever tolerance uses `ulp:`
+#
+
+modules:
+  - ACESlib.Utilities_Color
+  - ACESlib.Tonescales
+  - ACES_OT_Rec709_100nits
+
+module_paths:
+  - ../aces-dev/transforms/ctl/lib
+  - ../aces-dev/transforms/ctl/outputTransforms
+
+defaults:
+  tolerance:
+    abs: 1.0e-5      # typical floor for display-referred output transforms
+    rel: 1.0e-5
+
+tests:
+  # ---- 1. Inline scalar: simple known-answer ---------------------------
+  - id: hue_norm_zero_is_zero
+    description: Hue normalization of a neutral sample returns 0.
+    function: ACESlib.Utilities_Color::hue_from_RGB
+    inputs:
+      RGB: [0.18, 0.18, 0.18]
+    tolerance:
+      abs: 1.0e-6
+    oracle:
+      inline:
+        return: 0.0
+
+  # ---- 2. Struct input + per-field tolerance ---------------------------
+  - id: tonescale_midgray_maps_to_48nits
+    description: |
+      Forward tonescale on an 18% gray sample lands at 48 nits (+/-0.5 nit).
+      The struct input exercises full-literal binding; the tolerance shows
+      per-field relaxation -- L can drift more than `a`/`b`.
+    function: ACESlib.Tonescales::forward_tonescale
+    inputs:
+      lab:
+        L: 0.18
+        a: 0.0
+        b: 0.0
+    tolerance:
+      abs: 1.0e-4
+      per_field:
+        return.L: { abs: 0.5 }        # nits, not normalized
+        return.a: { abs: 1.0e-5 }
+        return.b: { abs: 1.0e-5 }
+    oracle:
+      inline:
+        return:
+          L: 48.0
+          a: 0.0
+          b: 0.0
+
+  # ---- 3. Sweep from an external CSV -----------------------------------
+  - id: ramp_linear_srgb
+    description: 1024-point linear->sRGB EOTF sweep; CSV drives both inputs and reference.
+    mode: sweep
+    function: ACES_OT_Rec709_100nits::forward_srgb_eotf
+    sweep:
+      inputs: ramps/srgb_inputs.csv
+      strict: true                   # fail load if columns don't match
+    tolerance:
+      ulp: 4                          # float ULPs; tight by design
+    oracle:
+      csv: ramps/srgb_reference.csv
+
+  # ---- 4. Image conformance against a reference EXR --------------------
+  - id: exr_macbeth_100nits
+    description: |
+      Run the 100-nit Rec.709 transform over the Macbeth chart reference and
+      diff against the expected EXR. Up to 2 per-channel pixel failures are
+      tolerated to absorb boundary rounding on the mask edges.
+    mode: image
+    function: ACES_OT_Rec709_100nits::forward_image
+    image:
+      input: references/macbeth_aces_ap0_16f.exr
+      input_channels:
+        R: R
+        G: G
+        B: B
+      output_channels:
+        R: R_out
+        G: G_out
+        B: B_out
+      ulp_precision: float            # required when tolerance.ulp is set
+    tolerance:
+      ulp: 1
+      per_channel:
+        R: { ulp: 2 }                 # the R primary maps through the
+                                      # chromaticity adaptation, a little looser
+    oracle:
+      exr: references/macbeth_rec709_100nits_ref.exr
+      max_failing_pixels: 2
+
+  # ---- 5. Known-failure: tracked regression ----------------------------
+  - id: gamut_mapper_edge_case
+    description: Red-magenta boundary; tracked until the gamut mapper is fixed.
+    function: ACES_OT_Rec709_100nits::gamut_compress
+    inputs:
+      RGB: [1.20, -0.01, 0.80]
+    known_failure: true
+    oracle:
+      inline:
+        return: [1.0, 0.0, 0.80]

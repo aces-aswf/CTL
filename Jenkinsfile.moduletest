@@ -1,0 +1,70 @@
+// Jenkins pipeline for ctltest (the CTL module-test framework).
+//
+// Assumes the agent has: cmake, a C++17 compiler, OpenEXR 3.x + Imath (or the
+// v2 libilmbase stack), yaml-cpp. On Linux agents, install via apt; on mac,
+// via brew. The JUnit XML from the CLI is archived so Jenkins can surface
+// per-case results in the build page.
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        BUILD_TYPE  = 'Release'
+        BUILD_DIR   = 'build'
+        JUNIT_XML   = 'ctltest-junit.xml'
+    }
+
+    stages {
+
+        stage('Configure') {
+            steps {
+                sh '''
+                    cmake -S . -B ${BUILD_DIR} \
+                        -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
+                        -DCTL_BUILD_MODULETEST=ON
+                '''
+            }
+        }
+
+        stage('Build') {
+            steps {
+                sh 'cmake --build ${BUILD_DIR} -j --config ${BUILD_TYPE}'
+            }
+        }
+
+        stage('ctest') {
+            steps {
+                // -L ctltest scopes to the moduletest label; exit code drives
+                // the Jenkins stage pass/fail.
+                dir("${BUILD_DIR}") {
+                    sh 'ctest -L ctltest --output-on-failure'
+                }
+            }
+        }
+
+        stage('ctltest CLI (JUnit)') {
+            steps {
+                // Structured report for Jenkins' junit plugin. Runs even if
+                // upstream stages failed so we still get per-case results.
+                sh '''
+                    ./${BUILD_DIR}/moduletest/cli/ctltest \
+                        --reporter junit \
+                        --output ${JUNIT_XML} \
+                        moduletest/tests/selftest/ || true
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            junit allowEmptyResults: false, testResults: "${JUNIT_XML}"
+            archiveArtifacts artifacts: "${JUNIT_XML}", allowEmptyArchive: true
+        }
+    }
+}

@@ -1,0 +1,30 @@
+version: 1
+suite: sweep_csv
+modules:
+  - st_sweep
+module_paths:
+  - ../fixtures
+
+defaults:
+  tolerance:
+    abs: 1.0e-6
+    rel: 1.0e-6
+
+tests:
+  - id: scale_add
+    description: y = x*k + b, five rows varying all three inputs
+    mode: sweep
+    function: st_sweep::scale_add
+    sweep:
+      inputs: sweep_scale_add_inputs.csv
+    oracle:
+      csv: sweep_scale_add_expected.csv
+
+  - id: clamp_and_abs
+    description: two output args per row, six rows
+    mode: sweep
+    function: st_sweep::clamp_and_abs
+    sweep:
+      inputs: sweep_clamp_inputs.csv
+    oracle:
+      csv: sweep_clamp_expected.csv

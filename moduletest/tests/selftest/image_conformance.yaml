@@ -1,0 +1,32 @@
+version: 1
+suite: image_conformance
+modules:
+  - st_image
+module_paths:
+  - ../fixtures
+
+defaults:
+  tolerance:
+    abs: 1.0e-6
+
+tests:
+  - id: rgb_gain_passthrough
+    description: Per-channel gain (R*0.5, G*0.25, B*0.125) matches reference pixel-exact.
+    mode: image
+    function: st_image::rgb_gain
+    image:
+      input: ../fixtures/image_rgb_gain_src.exr
+      input_channels:
+        R: R
+        G: G
+        B: B
+      output_channels:
+        R: R_out
+        G: G_out
+        B: B_out
+      ulp_precision: float
+    tolerance:
+      ulp: 1
+    oracle:
+      exr: ../fixtures/image_rgb_gain_ref.exr
+      max_failing_pixels: 0

@@ -1,0 +1,54 @@
+version: 1
+suite: csv_sweep_example
+#
+# Demonstrates driving a CTL function with a CSV of inputs and diffing
+# the outputs against a parallel CSV of expected values.
+#
+# File layout assumed:
+#   ./mymodule.ctl
+#   ./csv/
+#     inputs.csv        cols: x, y, k
+#     expected.csv      cols: return, out_hi, out_lo
+#
+# Row i of inputs.csv is paired with row i of expected.csv. Column names
+# in inputs.csv match CTL parameter names; column names in expected.csv
+# match output-arg names (plus `return` if the function has a return
+# value and returns_name is left at its default).
+#
+
+modules:
+  - mymodule
+module_paths:
+  - .
+
+defaults:
+  tolerance:
+    abs: 1.0e-6
+    rel: 1.0e-6
+
+tests:
+  - id: clamp_ramp_1k
+    description: 1024-row ramp exercising x in [-1,1] with clamp in [lo,hi].
+    mode: sweep
+    function: mymodule::clamp_ramp
+    sweep:
+      inputs: csv/inputs.csv
+      strict: true                    # extra/missing columns fail the load
+    tolerance:
+      # Tighten the absolute bound further for this test; the default is
+      # already 1e-6 so this is illustrative of how a per-test override works.
+      abs: 5.0e-7
+    oracle:
+      csv: csv/expected.csv
+
+  - id: clamp_ramp_loose
+    description: Same function, relaxed to ulp:8 so shipped builds across toolchains pass.
+    mode: sweep
+    function: mymodule::clamp_ramp
+    sweep:
+      inputs: csv/inputs.csv
+      strict: false                   # missing columns to stderr warning
+    tolerance:
+      ulp: 8
+    oracle:
+      csv: csv/expected.csv
