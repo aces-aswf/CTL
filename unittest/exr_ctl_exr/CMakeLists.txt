@@ -41,3 +41,5 @@ if(OpenEXR_FOUND)
     add_test(NAME "exr-ctl-exr-sScale-1.2-adoptedNeutral-D93" COMMAND ${EXR_CTL_EXR_EXECUTABLE_PATH} -C change_saturation -float sScale 1.2 -float2 adoptedNeutral 0.28315 0.29711 "${TEST_FILES}/marci-512.exr" "${EXR_CTL_EXR_OUTPUT_FOLDER}/exr-ctl-exr-sScale-1.2-adoptedNeutral-D93.exr" WORKING_DIRECTORY "${EXR_CTL_EXR_BUILD_DIR}")
 
 endif()
+
+ctl_configure_test_environment()

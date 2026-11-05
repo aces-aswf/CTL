@@ -78,3 +78,5 @@ if(OpenEXR_FOUND)
     add_test(NAME "exrdpx-EXR-to-DPX-noargs" COMMAND ${EXRDPX_EXECUTABLE_PATH} "${TEST_FILES}/marci-512.exr" "${EXRDPX_OUTPUT_FOLDER}/exrdpx-EXR-to-DPX-noargs.dpx" WORKING_DIRECTORY "${EXRDPX_BUILD_DIR}")
 endif()
 
+ctl_configure_test_environment()
+

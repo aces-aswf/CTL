@@ -29,3 +29,5 @@ target_link_libraries(IlmCtlMathTest
 )
 
 add_test(IlmCtlMath IlmCtlMathTest)
+
+ctl_configure_test_environment()
