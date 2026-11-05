@@ -75,6 +75,15 @@ struct BinaryMinusOp
     }
 };
 
+template <>
+inline void
+BinaryMinusOp<int, int, int>::execute (const int &in1, const int &in2, int &out)
+{
+    // Use unsigned arithmetic so signed subtraction wraps the same way
+    // for constants and for values computed at runtime.
+    out = int (unsigned (in1) - unsigned (in2));
+}
+
 
 template <class In1, class In2, class Out>
 struct BitAndOp

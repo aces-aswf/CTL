@@ -532,8 +532,9 @@ IntType::evaluate (LContext &lcontext, const ExprNodePtr &expr) const
 			    (expr->lineNumber, ~x->value);
 
 	      case TK_MINUS:
+		// Signed negation of INT_MIN is undefined. Negate as unsigned so INT_MIN wraps to itself.
 		return lcontext.newIntLiteralNode
-			    (expr->lineNumber, -x->value);
+			    (expr->lineNumber, int (-unsigned (x->value)));
 
 	      case TK_NOT:
 		return lcontext.newBoolLiteralNode
@@ -616,8 +617,9 @@ IntType::evaluate (LContext &lcontext, const ExprNodePtr &expr) const
 			    (expr->lineNumber, x->value <= y->value);
 
 	      case TK_MINUS:
+		// Use unsigned arithmetic to wrap the result without signed overflow.
 		return lcontext.newIntLiteralNode
-			    (expr->lineNumber, x->value - y->value);
+			    (expr->lineNumber, int (unsigned (x->value) - unsigned (y->value)));
 
 	      case TK_MOD:
 		return lcontext.newIntLiteralNode

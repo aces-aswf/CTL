@@ -62,8 +62,6 @@ testNested(input varying int in1,
 	    output varying int out4,
 	    output varying int out5)
 {
-    int cond = in1;
-
     int i = 0;
     while (i < in2)
     {
@@ -77,7 +75,6 @@ testNested(input varying int in1,
 	    out2 = out2 +1;
 	}
 
-	cond = cond -1;
 	out3 = out3 + 1;
 	return;
 	out4 = out4 + 1;

@@ -17,8 +17,6 @@ on:
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
   BUILD_TYPE: ubsan
-  # Abort so CTest WILL_FAIL tests cannot mistake sanitizer errors for expected failures.
-  UBSAN_OPTIONS: "abort_on_error=1:print_stacktrace=1"
 
 jobs:
   openexr2:

@@ -77,3 +77,5 @@ file(COPY
 DESTINATION
 	${CMAKE_CURRENT_BINARY_DIR}
 )
+
+ctl_configure_test_environment()

@@ -121,10 +121,6 @@ runTest (Interpreter &interp, int numThreads)
     size_t twHeight = (tw.max.y - tw.min.y + 1);
     size_t nPixels  = twWidth * twHeight;
 
-    size_t xStride    = sizeof (half);
-    size_t yStride    = sizeof (half) * twWidth;
-    size_t baseOffset = tw.min.y * yStride + tw.min.x * xStride;
-
     Array <half> d1 (nPixels);
     Array <half> h2 (nPixels);
 
@@ -136,11 +132,8 @@ runTest (Interpreter &interp, int numThreads)
 
     FrameBuffer inFb;
 
-    inFb.insert
-	("d1", Slice (HALF, (char *)&d1[0] - baseOffset, xStride, yStride));
-
-    inFb.insert
-	("h2", Slice (HALF, (char *)&h2[0] - baseOffset, xStride, yStride));
+    inFb.insert ("d1", Slice::Make (HALF, &d1[0], tw));
+    inFb.insert ("h2", Slice::Make (HALF, &h2[0], tw));
 
     Array <half> d2 (nPixels);
     Array <half> d3 (nPixels);
@@ -151,23 +144,12 @@ runTest (Interpreter &interp, int numThreads)
 
     FrameBuffer outFb;
 
-    outFb.insert
-	("d2", Slice (HALF, (char *)&d2[0] - baseOffset, xStride, yStride));
-
-    outFb.insert
-	("d3", Slice (HALF, (char *)&d3[0] - baseOffset, xStride, yStride));
-
-    outFb.insert
-	("e3", Slice (HALF, (char *)&e3[0] - baseOffset, xStride, yStride));
-
-    outFb.insert
-	("h3", Slice (HALF, (char *)&h3[0] - baseOffset, xStride, yStride));
-
-    outFb.insert
-	("j3", Slice (HALF, (char *)&j3[0] - baseOffset, xStride, yStride));
-
-    outFb.insert
-	("l2", Slice (HALF, (char *)&l2[0] - baseOffset, xStride, yStride));
+    outFb.insert ("d2", Slice::Make (HALF, &d2[0], tw));
+    outFb.insert ("d3", Slice::Make (HALF, &d3[0], tw));
+    outFb.insert ("e3", Slice::Make (HALF, &e3[0], tw));
+    outFb.insert ("h3", Slice::Make (HALF, &h3[0], tw));
+    outFb.insert ("j3", Slice::Make (HALF, &j3[0], tw));
+    outFb.insert ("l2", Slice::Make (HALF, &l2[0], tw));
 
     //
     // Call functions

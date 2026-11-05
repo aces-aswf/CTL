@@ -146,3 +146,5 @@ endif()
 add_test(NAME "ctlrender-maxInstCount-exception" COMMAND ctlrender -force -ctl "${PROJECT_SOURCE_DIR}/resources/test/ctl/throw_maxInstCount_exception.ctl" "${PROJECT_SOURCE_DIR}/resources/test/exr/colorbars_nuke_rgb_exr16.exr" "${CTLRENDER_OUTPUT_FOLDER}/maxInstCount_exception.exr")
 set_tests_properties("ctlrender-maxInstCount-exception" PROPERTIES WILL_FAIL TRUE)
 
+ctl_configure_test_environment()
+
