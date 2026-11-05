@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # install developement tools
 RUN apt-get -y install cmake
 RUN apt-get -y install clang
+ENV CXX=clang++
 
 # install CTL dependencies
 RUN apt-get -y install libopenexr-dev
