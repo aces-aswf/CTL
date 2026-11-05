@@ -79,7 +79,8 @@ template <>
 inline void
 BinaryMinusOp<int, int, int>::execute (const int &in1, const int &in2, int &out)
 {
-    // Match the unsigned subtraction used when folding signed constants.
+    // Use unsigned arithmetic so signed subtraction wraps the same way
+    // for constants and for values computed at runtime.
     out = int (unsigned (in1) - unsigned (in2));
 }
 
