@@ -61,6 +61,7 @@
 #include <exception>
 #include <assert.h>
 #include <sstream>
+#include <stdlib.h>
 
 using namespace Ctl;
 using namespace std;
@@ -235,11 +236,9 @@ testLookupCubic1D (Interpreter &interp)
 
 
 void
-testLookup3D (Interpreter &interp)
+testLookup3D (Interpreter &interp, const char *functionName)
 {
-    cout << "3D, linear, regular spacing" << endl;
-
-    FunctionCallPtr func = interp.newFunctionCall ("varyingLookup3D");
+    FunctionCallPtr func = interp.newFunctionCall (functionName);
     assert (func);
 
     FunctionArgPtr pMin = func->findInputArg ("pMin");
@@ -514,6 +513,114 @@ testInterpolateCubic1D (Interpreter &interp)
 }
 
 
+//
+// Release builds define NDEBUG, which turns assert() into nothing, so a
+// check written with assert() reports success whatever it observed.
+//
+#define TETRA_REQUIRE(x)                                                \
+    do {                                                                \
+        if (!(x)) {                                                     \
+            std::cerr << "REQUIRE failed: " #x " at " << __FILE__       \
+                      << ":" << __LINE__ << std::endl;                  \
+            exit (1);                                                   \
+        }                                                               \
+    } while (0)
+
+
+//
+// lookup3DTetra splits each cell into six tetrahedra and picks one by
+// ordering the fractional coordinates.  Probe all six.
+//
+// The shared testLookup3D above cannot do this.  Its probes land exactly
+// on grid corners, so every fractional coordinate is zero and only the
+// degenerate case is ever reached, and its table is linear along each
+// axis, which all six tetrahedra reproduce identically.  Both have to be
+// fixed at once for the selection to be observable at all.
+//
+static void
+testLookup3DTetraBranches (Interpreter &interp)
+{
+    cout << "3D, tetrahedral, all six tetrahedra" << endl;
+
+    // One probe per tetrahedron, each with distinct non-zero fractions.
+    // pMin/pMax are 0 and 1 over a 2x2x2 table, so the probe coordinate
+    // is the fractional coordinate.
+    static const float probes[6][3] = {
+        {0.7f, 0.5f, 0.2f},   // u > v > w
+        {0.7f, 0.2f, 0.5f},   // u > v, u > w >= v
+        {0.5f, 0.2f, 0.7f},   // w >= u > v
+        {0.2f, 0.5f, 0.7f},   // w > v >= u
+        {0.2f, 0.7f, 0.5f},   // v >= w > u
+        {0.5f, 0.7f, 0.2f},   // v >= u >= w
+    };
+
+    // Hand-computed from the fixture's corner values and the four-term
+    // blend.  Each differs from what the other five tetrahedra would
+    // give, so a wrong selection cannot pass.
+    static const float expect[6][3] = {
+        {0.7f, 0.5f, 1.4f},
+        {0.7f, 0.2f, 1.1f},
+        {0.5f, 0.2f, 1.3f},
+        {0.2f, 0.5f, 1.0f},
+        {0.2f, 0.7f, 0.8f},
+        {0.5f, 0.7f, 1.4f},
+    };
+
+    FunctionCallPtr func =
+        interp.newFunctionCall ("varyingLookup3DTetraBranches");
+    TETRA_REQUIRE (func);
+
+    FunctionArgPtr pMin = func->findInputArg ("pMin");
+    FunctionArgPtr pMax = func->findInputArg ("pMax");
+    FunctionArgPtr p    = func->findInputArg ("p");
+    FunctionArgPtr q    = func->findOutputArg ("q");
+    TETRA_REQUIRE (pMin && pMax && p && q);
+
+    char  *pMinData = pMin->data();
+    size_t pMinSize = pMin->type()->alignedObjectSize();
+    size_t pMinE    = pMin->type().cast<ArrayType>()->elementSize();
+    char  *pMaxData = pMax->data();
+    size_t pMaxSize = pMax->type()->alignedObjectSize();
+    size_t pMaxE    = pMax->type().cast<ArrayType>()->elementSize();
+    char  *pData    = p->data();
+    size_t pSize    = p->type()->alignedObjectSize();
+    size_t pE       = p->type().cast<ArrayType>()->elementSize();
+
+    for (size_t m = 0; m < 6; ++m)
+    {
+        for (size_t t = 0; t < 3; ++t)
+        {
+            *(float *)(pMinData + pMinSize * m + pMinE * t) = 0.0f;
+            *(float *)(pMaxData + pMaxSize * m + pMaxE * t) = 1.0f;
+            *(float *)(pData    + pSize    * m + pE    * t) = probes[m][t];
+        }
+    }
+
+    func->callFunction (6);
+
+    char  *qData = q->data();
+    size_t qSize = q->type()->alignedObjectSize();
+    size_t qE    = q->type().cast<ArrayType>()->elementSize();
+
+    for (size_t m = 0; m < 6; ++m)
+    {
+        for (size_t t = 0; t < 3; ++t)
+        {
+            const float got = *(float *)(qData + qSize * m + qE * t);
+            const float err = got > expect[m][t]
+                            ? got - expect[m][t] : expect[m][t] - got;
+            if (err > 1e-5f)
+            {
+                std::cerr << "tetrahedron " << (m + 1) << ", component "
+                          << t << ": expected " << expect[m][t]
+                          << ", got " << got << std::endl;
+            }
+            TETRA_REQUIRE (err <= 1e-5f);
+        }
+    }
+}
+
+
 void
 testVaryingLookup ()
 {
@@ -526,7 +633,15 @@ testVaryingLookup ()
 
 	testLookup1D (interp);
 	testLookupCubic1D (interp);
-	testLookup3D (interp);
+
+	cout << "3D, linear, regular spacing" << endl;
+	testLookup3D (interp, "varyingLookup3D");
+
+	cout << "3D, tetrahedral, regular spacing" << endl;
+	testLookup3D (interp, "varyingLookup3DTetra");
+
+	testLookup3DTetraBranches (interp);
+
 	testInterpolate1D (interp);
 	testInterpolateCubic1D (interp);
 

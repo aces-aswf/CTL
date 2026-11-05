@@ -219,6 +219,166 @@ testLookup3D ()
 
 
 void
+testLookup3DTetra ()
+{
+    print ("Testing 3D table lookups, tetrahedral, regular spacing\n");
+
+    float f[2][2][2][3];
+
+    f[0][0][0] = f3 (2, 2, 2);
+    f[0][0][1] = f3 (2, 2, 6);
+    f[0][1][0] = f3 (2, 6, 2);
+    f[0][1][1] = f3 (2, 6, 6);
+    f[1][0][0] = f3 (6, 2, 2);
+    f[1][0][1] = f3 (6, 2, 6);
+    f[1][1][0] = f3 (6, 6, 2);
+    f[1][1][1] = f3 (6, 6, 6);
+
+    float fMin[3] = {1, 1, 1};
+    float fMax[3] = {5, 5, 5};
+
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (1, 1, 1)), f3 (2, 2, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (5, 1, 1)), f3 (6, 2, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (1, 5, 1)), f3 (2, 6, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (5, 5, 1)), f3 (6, 6, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (1, 1, 5)), f3 (2, 2, 6)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (5, 1, 5)), f3 (6, 2, 6)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (1, 5, 5)), f3 (2, 6, 6)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (5, 5, 5)), f3 (6, 6, 6)));
+
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (2, 2, 2)), f3 (3, 3, 3)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (4, 2, 2)), f3 (5, 3, 3)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (2, 4, 2)), f3 (3, 5, 3)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (4, 4, 2)), f3 (5, 5, 3)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (2, 2, 4)), f3 (3, 3, 5)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (4, 2, 4)), f3 (5, 3, 5)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (2, 4, 4)), f3 (3, 5, 5)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (4, 4, 4)), f3 (5, 5, 5)));
+
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (0, 0, 0)), f3 (2, 2, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (6, 0, 0)), f3 (6, 2, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (0, 6, 0)), f3 (2, 6, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (6, 6, 0)), f3 (6, 6, 2)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (0, 0, 6)), f3 (2, 2, 6)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (6, 0, 6)), f3 (6, 2, 6)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (0, 6, 6)), f3 (2, 6, 6)));
+    assert (equal (lookup3DTetra_f3 (f, fMin, fMax, f3 (6, 6, 6)), f3 (6, 6, 6)));
+
+    //
+    // A table that is non-linear in (i, j, k) so tetrahedral and
+    // trilinear weightings disagree:
+    //
+    //     t[i][j][k] = {4*i + 2*j + k, i*j, j*k}
+    //
+    // Probe the six permutations of (0.25, 0.5, 0.75).  Each lands in a
+    // different tetrahedron of the same cell, and for every permutation
+    // the sorted fractions are (0.75, 0.5, 0.25), so all four blend
+    // weights are exactly 0.25 and each expected value is exact in
+    // float arithmetic.
+    //
+
+    float t[2][2][2][3];
+
+    for (int i = 0; i < 2; i = i + 1)
+	for (int j = 0; j < 2; j = j + 1)
+	    for (int k = 0; k < 2; k = k + 1)
+		t[i][j][k] = f3 (4 * i + 2 * j + k, i * j, j * k);
+
+    float tMin[3] = {0, 0, 0};
+    float tMax[3] = {1, 1, 1};
+
+    assert (equal (lookup3DTetra_f3 (t, tMin, tMax, f3 (.75, .50, .25)),
+		   f3 (4.25, 0.50, 0.25)));
+    assert (equal (lookup3DTetra_f3 (t, tMin, tMax, f3 (.75, .25, .50)),
+		   f3 (4.00, 0.25, 0.25)));
+    assert (equal (lookup3DTetra_f3 (t, tMin, tMax, f3 (.50, .25, .75)),
+		   f3 (3.25, 0.25, 0.25)));
+    assert (equal (lookup3DTetra_f3 (t, tMin, tMax, f3 (.25, .50, .75)),
+		   f3 (2.75, 0.25, 0.50)));
+    assert (equal (lookup3DTetra_f3 (t, tMin, tMax, f3 (.25, .75, .50)),
+		   f3 (3.00, 0.25, 0.50)));
+    assert (equal (lookup3DTetra_f3 (t, tMin, tMax, f3 (.50, .75, .25)),
+		   f3 (3.75, 0.50, 0.25)));
+
+    //
+    // Tetrahedral and trilinear must actually differ on this table:
+    // at (.75, .50, .25) trilinear gives i*j -> u*v = 0.375, while the
+    // tetrahedral blend gives 0.5.
+    //
+
+    assert (lookup3D_f3 (t, tMin, tMax, f3 (.75, .50, .25))[1] == 0.375);
+    assert (lookup3DTetra_f3 (t, tMin, tMax, f3 (.75, .50, .25))[1] == 0.5);
+
+    float xf;
+    float yf;
+    float zf;
+
+    half xh;
+    half yh;
+    half zh;
+
+    float g[2][3][4][3];
+    float gMin[3];
+    float gMax[3];
+
+    gMin = f3 (0, 0, 0);
+    gMax = f3 (1, 2, 3);
+
+    for (int i = 0; i < 2; i = i + 1)
+	for (int j = 0; j < 3; j = j + 1)
+	    for (int k = 0; k < 4; k = k + 1)
+		g[i][j][k] = f3 (i, j, k);
+
+    assert (equal (lookup3DTetra_f3 (g, gMin, gMax, f3 (.25, 1.5, 2.75)),
+		   f3 (.25, 1.5, 2.75)));
+
+    lookup3DTetra_f (g, gMin, gMax, .25, 1.5, 2.75, xf, yf, zf);
+    assert (xf == .25 && yf == 1.5 && zf == 2.75);
+
+    lookup3DTetra_h (g, gMin, gMax, .25, 1.5, 2.75, xh, yh, zh);
+    assert (xh == .25 && yh == 1.5 && zh == 2.75);
+
+    for (int i = 0; i < 2; i = i + 1)
+	for (int j = 0; j < 3; j = j + 1)
+	    for (int k = 0; k < 4; k = k + 1)
+	    {
+		assert (equal (lookup3DTetra_f3 (g, gMin, gMax, f3 (i, j, k)),
+			       f3 (i, j, k)));
+
+		lookup3DTetra_f (g, gMin, gMax, i, j, k, xf, yf, zf);
+		assert (xf == i && yf == j && zf == k);
+
+		lookup3DTetra_h (g, gMin, gMax, i, j, k, xh, yh, zh);
+		assert (xh == i && yh == j && zh == k);
+	    }
+
+    gMin = f3 (2, 4, 6);
+    gMax = f3 (3, 6, 9);
+    int n = 0;
+
+    for (int i = 0; i < 2; i = i + 1)
+	for (int j = 0; j < 3; j = j + 1)
+	    for (int k = 0; k < 4; k = k + 1)
+	    {
+		assert (equal (lookup3DTetra_f3 (g, gMin, gMax,
+						 f3 (i+2, j+4, k+6)),
+			       f3 (i, j, k)));
+
+		lookup3DTetra_f (g, gMin, gMax, i+2, j+4, k+6, xf, yf, zf);
+		assert (xf == i && yf == j && zf == k);
+
+		lookup3DTetra_h (g, gMin, gMax, i+2, j+4, k+6, xh, yh, zh);
+		assert (xh == i && yh == j && zh == k);
+
+		n = n + 1;
+	    }
+
+    assert (n == 2 * 3 * 4);
+    print ("ok\n");
+}
+
+
+void
 testInterpolate1D ()
 {
     print ("Testing 1D table lookups: linear, random spacing\n");
@@ -302,6 +462,7 @@ testLookupTables ()
     testLookup1D();
     testLookupCubic1D();
     testLookup3D();
+    testLookup3DTetra();
     testInterpolate1D();
     testInterpolateCubic1D();
     return 0;

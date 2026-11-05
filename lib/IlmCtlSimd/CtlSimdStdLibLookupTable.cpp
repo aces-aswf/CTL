@@ -178,13 +178,20 @@ simdLookupCubic1D (const SimdBoolMask &mask, SimdXContext &xcontext)
 }
 
 
+typedef V3f (*Lookup3DFunc) (const V3f[], const V3i &,
+			     const V3f &, const V3f &, const V3f &);
+
+
 void
-simdLookup3D_f3 (const SimdBoolMask &mask, SimdXContext &xcontext)
+simdDoLookup3D_f3
+    (const SimdBoolMask &mask,
+     SimdXContext &xcontext,
+     Lookup3DFunc func)
 {
     //
-    // float[3] lookup3D_f3 (float table[][][][3],
-    //			     float pMin[3], float pMax[3],
-    //			     float p[3])
+    // float[3] func (float table[][][][3],
+    //		      float pMin[3], float pMax[3],
+    //		      float p[3])
     //
 
     const SimdReg &size2  = xcontext.stack().regFpRelative (-1);
@@ -213,11 +220,11 @@ simdLookup3D_f3 (const SimdBoolMask &mask, SimdXContext &xcontext)
 	{
 	    if (mask[i])
 	    {
-		*(V3f *)(returnValue[i]) = lookup3D ((V3f *)(table[i]), 
-						     s,
-						     *(V3f *)(pMin[i]),
-						     *(V3f *)(pMax[i]),
-						     *(V3f *)(p[i]));
+		*(V3f *)(returnValue[i]) = func ((V3f *)(table[i]),
+						 s,
+						 *(V3f *)(pMin[i]),
+						 *(V3f *)(pMax[i]),
+						 *(V3f *)(p[i]));
 	    }
 	}
     }
@@ -225,23 +232,52 @@ simdLookup3D_f3 (const SimdBoolMask &mask, SimdXContext &xcontext)
     {
 	returnValue.setVarying (false);
 
-	*(V3f *)(returnValue[0]) = lookup3D ((V3f *)(table[0]), 
-					     s,
-					     *(V3f *)(pMin[0]),
-					     *(V3f *)(pMax[0]),
-					     *(V3f *)(p[0]));
+	*(V3f *)(returnValue[0]) = func ((V3f *)(table[0]),
+					 s,
+					 *(V3f *)(pMin[0]),
+					 *(V3f *)(pMax[0]),
+					 *(V3f *)(p[0]));
     }
 }
 
 
 void
-simdLookup3D_f (const SimdBoolMask &mask, SimdXContext &xcontext)
+simdLookup3D_f3 (const SimdBoolMask &mask, SimdXContext &xcontext)
 {
     //
-    // void lookup3D_f (float table[][][][3],
-    //		        float pMin[3], float pMax[3],
-    //		        float p0, float p1, float p2,
-    //		        float q0, float q1, float q2)
+    // float[3] lookup3D_f3 (float table[][][][3],
+    //			     float pMin[3], float pMax[3],
+    //			     float p[3])
+    //
+
+    simdDoLookup3D_f3 (mask, xcontext, lookup3D);
+}
+
+
+void
+simdLookup3DTetra_f3 (const SimdBoolMask &mask, SimdXContext &xcontext)
+{
+    //
+    // float[3] lookup3DTetra_f3 (float table[][][][3],
+    //			          float pMin[3], float pMax[3],
+    //			          float p[3])
+    //
+
+    simdDoLookup3D_f3 (mask, xcontext, lookup3DTetra);
+}
+
+
+void
+simdDoLookup3D_f
+    (const SimdBoolMask &mask,
+     SimdXContext &xcontext,
+     Lookup3DFunc func)
+{
+    //
+    // void func (float table[][][][3],
+    //		  float pMin[3], float pMax[3],
+    //		  float p0, float p1, float p2,
+    //		  float q0, float q1, float q2)
     //
 
     const SimdReg &size2  = xcontext.stack().regFpRelative (-1);
@@ -280,11 +316,11 @@ simdLookup3D_f (const SimdBoolMask &mask, SimdXContext &xcontext)
 	    {
 		V3f p (*(float *)p0[i], *(float *)p1[i], *(float *)p2[i]);
 
-		V3f q = lookup3D ((V3f *)(table[i]), 
-				  s,
-				  *(V3f *)(pMin[i]),
-				  *(V3f *)(pMax[i]),
-				  p);
+		V3f q = func ((V3f *)(table[i]),
+			      s,
+			      *(V3f *)(pMin[i]),
+			      *(V3f *)(pMax[i]),
+			      p);
 
 		*(float *)q0[i] = q[0];
 		*(float *)q1[i] = q[1];
@@ -300,11 +336,11 @@ simdLookup3D_f (const SimdBoolMask &mask, SimdXContext &xcontext)
 
 	V3f p (*(float *)p0[0], *(float *)p1[0], *(float *)p2[0]);
 
-	V3f q = lookup3D ((V3f *)(table[0]), 
-			  s,
-			  *(V3f *)(pMin[0]),
-			  *(V3f *)(pMax[0]),
-			  p);
+	V3f q = func ((V3f *)(table[0]),
+		      s,
+		      *(V3f *)(pMin[0]),
+		      *(V3f *)(pMax[0]),
+		      p);
 
 	*(float *)q0[0] = q[0];
 	*(float *)q1[0] = q[1];
@@ -314,13 +350,44 @@ simdLookup3D_f (const SimdBoolMask &mask, SimdXContext &xcontext)
 
 
 void
-simdLookup3D_h (const SimdBoolMask &mask, SimdXContext &xcontext)
+simdLookup3D_f (const SimdBoolMask &mask, SimdXContext &xcontext)
 {
     //
-    // void lookup3D_h (float table[][][][3],
+    // void lookup3D_f (float table[][][][3],
     //		        float pMin[3], float pMax[3],
-    //		        half p0, half p1, half p2,
-    //		        half q0, half q1, half q2)
+    //		        float p0, float p1, float p2,
+    //		        float q0, float q1, float q2)
+    //
+
+    simdDoLookup3D_f (mask, xcontext, lookup3D);
+}
+
+
+void
+simdLookup3DTetra_f (const SimdBoolMask &mask, SimdXContext &xcontext)
+{
+    //
+    // void lookup3DTetra_f (float table[][][][3],
+    //			     float pMin[3], float pMax[3],
+    //			     float p0, float p1, float p2,
+    //			     float q0, float q1, float q2)
+    //
+
+    simdDoLookup3D_f (mask, xcontext, lookup3DTetra);
+}
+
+
+void
+simdDoLookup3D_h
+    (const SimdBoolMask &mask,
+     SimdXContext &xcontext,
+     Lookup3DFunc func)
+{
+    //
+    // void func (float table[][][][3],
+    //		  float pMin[3], float pMax[3],
+    //		  half p0, half p1, half p2,
+    //		  half q0, half q1, half q2)
     //
 
     const SimdReg &size2  = xcontext.stack().regFpRelative (-1);
@@ -359,11 +426,11 @@ simdLookup3D_h (const SimdBoolMask &mask, SimdXContext &xcontext)
 	    {
 		V3f p (*(half *)p0[i], *(half *)p1[i], *(half *)p2[i]);
 
-		V3f q = lookup3D ((V3f *)(table[i]), 
-				  s,
-				  *(V3f *)(pMin[i]),
-				  *(V3f *)(pMax[i]),
-				  p);
+		V3f q = func ((V3f *)(table[i]),
+			      s,
+			      *(V3f *)(pMin[i]),
+			      *(V3f *)(pMax[i]),
+			      p);
 
 		*(half *)q0[i] = q[0];
 		*(half *)q1[i] = q[1];
@@ -379,16 +446,44 @@ simdLookup3D_h (const SimdBoolMask &mask, SimdXContext &xcontext)
 
 	V3f p (*(half *)p0[0], *(half *)p1[0], *(half *)p2[0]);
 
-	V3f q = lookup3D ((V3f *)(table[0]), 
-			  s,
-			  *(V3f *)(pMin[0]),
-			  *(V3f *)(pMax[0]),
-			  p);
+	V3f q = func ((V3f *)(table[0]),
+		      s,
+		      *(V3f *)(pMin[0]),
+		      *(V3f *)(pMax[0]),
+		      p);
 
 	*(half *)q0[0] = q[0];
 	*(half *)q1[0] = q[1];
 	*(half *)q2[0] = q[2];
     }
+}
+
+
+void
+simdLookup3D_h (const SimdBoolMask &mask, SimdXContext &xcontext)
+{
+    //
+    // void lookup3D_h (float table[][][][3],
+    //		        float pMin[3], float pMax[3],
+    //		        half p0, half p1, half p2,
+    //		        half q0, half q1, half q2)
+    //
+
+    simdDoLookup3D_h (mask, xcontext, lookup3D);
+}
+
+
+void
+simdLookup3DTetra_h (const SimdBoolMask &mask, SimdXContext &xcontext)
+{
+    //
+    // void lookup3DTetra_h (float table[][][][3],
+    //			     float pMin[3], float pMax[3],
+    //			     half p0, half p1, half p2,
+    //			     half q0, half q1, half q2)
+    //
+
+    simdDoLookup3D_h (mask, xcontext, lookup3DTetra);
 }
 
 
@@ -499,6 +594,15 @@ declareSimdStdLibLookupTable (SymbolTable &symtab, SimdStdTypes &types)
 
     declareSimdCFunc (symtab, simdLookup3D_h,
 		      types.funcType_v_f0003_f3_f3_hhh_ohhh(), "lookup3D_h");
+
+    declareSimdCFunc (symtab, simdLookup3DTetra_f3,
+		      types.funcType_f3_f0003_f3_f3_f3(), "lookup3DTetra_f3");
+
+    declareSimdCFunc (symtab, simdLookup3DTetra_f,
+		      types.funcType_v_f0003_f3_f3_fff_offf(), "lookup3DTetra_f");
+
+    declareSimdCFunc (symtab, simdLookup3DTetra_h,
+		      types.funcType_v_f0003_f3_f3_hhh_ohhh(), "lookup3DTetra_h");
 
     declareSimdCFunc (symtab, simdInterpolate1D,
 		      types.funcType_f_f02_f(), "interpolate1D");
