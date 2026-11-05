@@ -71,6 +71,7 @@
 #include <ImathFun.h>
 #include <Iex.h>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 
 using namespace Imath;
@@ -180,6 +181,17 @@ throwSliceSampling ()
 	   "CTL function calls must have x and y sampling rate 1.");
 }
 
+char *
+pixelAddress (const Slice &slice, long x, long y)
+{
+    // Slice::base represents pixel (0, 0) and can lie outside the buffer.
+    // Calculate the address as an integer before forming the pixel pointer.
+    const auto base = reinterpret_cast<std::uintptr_t> (slice.base);
+    const auto offset = static_cast<std::uintptr_t> (x) * slice.xStride +
+                        static_cast<std::uintptr_t> (y) * slice.yStride;
+    return reinterpret_cast<char *> (base + offset);
+}
+
 } // namespace
 
 
@@ -212,7 +224,7 @@ copyFunctionArg
 	for (size_t i = 0; i < numSamples; ++i)
 	{
 	    *(half *)dstData =
-		*(half *)(src.base + x * src.xStride + y * src.yStride);
+		*(half *)pixelAddress (src, x, y);
 
 	    dstData += dstStride;
 	    x += 1;
@@ -234,7 +246,7 @@ copyFunctionArg
 	for (size_t i = 0; i < numSamples; ++i)
 	{
 	    *(float *)dstData =
-		*(float *)(src.base + x * src.xStride + y * src.yStride);
+		*(float *)pixelAddress (src, x, y);
 
 	    dstData += dstStride;
 	    x += 1;
@@ -256,7 +268,7 @@ copyFunctionArg
 	for (size_t i = 0; i < numSamples; ++i)
 	{
 	    *(unsigned int *)dstData =
-		*(unsigned int *)(src.base + x * src.xStride + y * src.yStride);
+		*(unsigned int *)pixelAddress (src, x, y);
 
 	    dstData += dstStride;
 	    x += 1;
@@ -304,7 +316,7 @@ copyFunctionArg
 
 	for (size_t i = 0; i < numSamples; ++i)
 	{
-	    *(half *)(dst.base + x * dst.xStride + y * dst.yStride) =
+	    *(half *)pixelAddress (dst, x, y) =
 		*(half *)srcData;
 
 	    srcData += srcStride;
@@ -326,7 +338,7 @@ copyFunctionArg
 
 	for (size_t i = 0; i < numSamples; ++i)
 	{
-	    *(float *)(dst.base + x * dst.xStride + y * dst.yStride) =
+	    *(float *)pixelAddress (dst, x, y) =
 		*(float *)srcData;
 
 	    srcData += srcStride;
@@ -348,7 +360,7 @@ copyFunctionArg
 
 	for (size_t i = 0; i < numSamples; ++i)
 	{
-	    *(unsigned int *)(dst.base + x * dst.xStride + y * dst.yStride) =
+	    *(unsigned int *)pixelAddress (dst, x, y) =
 		*(unsigned int *)srcData;
 
 	    srcData += srcStride;

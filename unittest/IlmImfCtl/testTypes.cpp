@@ -173,10 +173,6 @@ runTest (Interpreter &interp)
     size_t twHeight = (tw.max.y - tw.min.y + 1);
     size_t nPixels  = twWidth * twHeight;
 
-    size_t xStride    = 1;
-    size_t yStride    = twWidth;
-    size_t baseOffset = tw.min.y * yStride + tw.min.x * xStride;
-
     Array <half> vh1 (nPixels);
     Array <float> vf1 (nPixels);
     Array <unsigned int> vu1 (nPixels);
@@ -190,23 +186,9 @@ runTest (Interpreter &interp)
 
     FrameBuffer inFb;
 
-    inFb.insert
-	("vh1", Slice (HALF,
-		       (char *)&vh1[0] - baseOffset * sizeof (half),
-		       xStride * sizeof (half),
-		       yStride * sizeof (half)));
-
-    inFb.insert
-		("vf1", Slice (Imf::FLOAT,
-		       (char *)&vf1[0] - baseOffset * sizeof (float),
-		       xStride * sizeof (float),
-		       yStride * sizeof (float)));
-
-    inFb.insert
-		("vu1", Slice (Imf::UINT,
-		       (char *)&vu1[0] - baseOffset * sizeof (unsigned int),
-		       xStride * sizeof (unsigned int),
-		       yStride * sizeof (unsigned int)));
+    inFb.insert ("vh1", Slice::Make (HALF, &vh1[0], tw));
+    inFb.insert ("vf1", Slice::Make (Imf::FLOAT, &vf1[0], tw));
+    inFb.insert ("vu1", Slice::Make (Imf::UINT, &vu1[0], tw));
 
     Array <half> vh2 (nPixels);
     Array <float> vf2 (nPixels);
@@ -221,23 +203,9 @@ runTest (Interpreter &interp)
 
     FrameBuffer outFb;
 
-    outFb.insert
-	("vh2", Slice (HALF,
-		       (char *)&vh2[0] - baseOffset * sizeof (half),
-		       xStride * sizeof (half),
-		       yStride * sizeof (half)));
-
-    outFb.insert
-		("vf2", Slice (Imf::FLOAT,
-		       (char *)&vf2[0] - baseOffset * sizeof (float),
-		       xStride * sizeof (float),
-		       yStride * sizeof (float)));
-
-    outFb.insert
-		("vu2", Slice (Imf::UINT,
-		       (char *)&vu2[0] - baseOffset * sizeof (unsigned int),
-		       xStride * sizeof (unsigned int),
-		       yStride * sizeof (unsigned int)));
+    outFb.insert ("vh2", Slice::Make (HALF, &vh2[0], tw));
+    outFb.insert ("vf2", Slice::Make (Imf::FLOAT, &vf2[0], tw));
+    outFb.insert ("vu2", Slice::Make (Imf::UINT, &vu2[0], tw));
 
     //
     // Call functions
